@@ -4,7 +4,6 @@ import { createServer, type IncomingMessage } from 'http';
 import { getConfig } from './config.js';
 import { IrcClient } from './irc-client.js';
 import * as log from './logger.js';
-import type { ConnectParams } from './types.js';
 
 interface Client {
   id: string;
@@ -13,179 +12,101 @@ interface Client {
   irc: IrcClient | null;
 }
 
-interface ClientMessage {
-  event: string;
-  data: {
-    type: string;
-    reason?: string;
-    line?: string;
-  } & Partial<ConnectParams>;
-}
-
-let clientId = 0;
+let nextId = 0;
 
 export class Gateway {
-  private server = createServer((_, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('IRC Gateway');
-  });
+  private server = createServer((_, res) => res.end('IRC Gateway'));
   private wss = new WebSocketServer({ noServer: true });
   private clients = new Map<string, Client>();
   private ipCounts = new Map<string, number>();
 
   constructor() {
-    this.server.on('upgrade', (req, socket, head) => this.handleUpgrade(req, socket, head));
+    this.server.on('upgrade', (req, socket, head) => this.onUpgrade(req, socket, head));
   }
 
-  private handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
-    const config = getConfig();
+  private onUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
+    const cfg = getConfig();
     const path = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`).pathname;
+    const ip = (req.headers['x-forwarded-for']?.toString().split(',')[0] ?? req.socket.remoteAddress ?? '127.0.0.1').trim();
 
-    if (path !== config.path) {
-      socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
-      socket.destroy();
-      return;
-    }
+    if (path !== cfg.path) return void (socket.write('HTTP/1.1 404 Not Found\r\n\r\n'), socket.destroy());
+    if ((this.ipCounts.get(ip) ?? 0) >= cfg.maxConnectionsPerIp) return void (socket.write('HTTP/1.1 429 Too Many Requests\r\n\r\n'), socket.destroy());
+    if (this.clients.size >= cfg.maxClients) return void (socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n'), socket.destroy());
 
-    const ip = this.getIp(req);
-    const count = this.ipCounts.get(ip) ?? 0;
+    this.wss.handleUpgrade(req, socket, head, (ws) => {
+      const id = `c${++nextId}`;
+      const client: Client = { id, ip, ws, irc: null };
+      this.clients.set(id, client);
+      this.ipCounts.set(ip, (this.ipCounts.get(ip) ?? 0) + 1);
+      log.info(`[${id}] Connected from ${ip} (${this.clients.size} clients)`);
 
-    if (count >= config.maxConnectionsPerIp) {
-      log.warn(`Too many connections from ${ip}`);
-      socket.write('HTTP/1.1 429 Too Many Requests\r\n\r\n');
-      socket.destroy();
-      return;
-    }
-
-    if (this.clients.size >= config.maxClients) {
-      log.warn('Max clients reached');
-      socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
-      socket.destroy();
-      return;
-    }
-
-    this.wss.handleUpgrade(req, socket, head, (ws) => this.addClient(ws, ip));
-  }
-
-  private getIp(req: IncomingMessage): string {
-    const xff = req.headers['x-forwarded-for'];
-    if (xff) return (Array.isArray(xff) ? xff[0] : xff).split(',')[0].trim();
-    return req.socket.remoteAddress ?? '127.0.0.1';
-  }
-
-  private addClient(ws: WebSocket, ip: string): void {
-    const id = `c${String(++clientId)}`;
-    const client: Client = { id, ip, ws, irc: null };
-
-    this.clients.set(id, client);
-    this.ipCounts.set(ip, (this.ipCounts.get(ip) ?? 0) + 1);
-    log.info(`[${id}] Connected from ${ip} (${String(this.clients.size)} clients)`);
-
-    ws.on('message', (data) => this.onMessage(client, data.toString()));
-    ws.on('close', () => this.removeClient(client));
-    ws.on('error', (err) => log.error(`[${id}] WS error: ${err.message}`));
-  }
-
-  private removeClient(client: Client): void {
-    client.irc?.quit(getConfig().quitMessage);
-    this.clients.delete(client.id);
-
-    const count = (this.ipCounts.get(client.ip) ?? 1) - 1;
-    if (count <= 0) this.ipCounts.delete(client.ip);
-    else this.ipCounts.set(client.ip, count);
-
-    log.info(`[${client.id}] Disconnected (${String(this.clients.size)} clients)`);
+      ws.on('message', (data) => this.onMessage(client, data.toString()));
+      ws.on('close', () => {
+        client.irc?.quit(cfg.quitMessage);
+        this.clients.delete(id);
+        const cnt = (this.ipCounts.get(ip) ?? 1) - 1;
+        if (cnt <= 0) this.ipCounts.delete(ip); else this.ipCounts.set(ip, cnt);
+        log.info(`[${id}] Disconnected (${this.clients.size} clients)`);
+      });
+    });
   }
 
   private onMessage(client: Client, raw: string): void {
-    let msg: ClientMessage;
-    try {
-      msg = JSON.parse(raw) as ClientMessage;
-    } catch {
-      return;
-    }
+    const cfg = getConfig();
+    let msg: { event?: string; data?: Record<string, unknown> };
+    try { msg = JSON.parse(raw) as typeof msg; } catch { return; }
+    if (msg.event !== 'sic-client-event' || !msg.data) return;
 
-    if (msg.event !== 'sic-client-event') return;
+    const d = msg.data;
+    const type = d.type as string;
 
-    const { type, reason, line, ...connectData } = msg.data;
+    if (type === 'disconnect') {
+      client.irc?.quit((d.reason as string) ?? cfg.quitMessage);
+      client.irc = null;
+    } else if (type === 'raw' && d.line) {
+      client.irc?.send(d.line as string);
+    } else if (type === 'connect' && d.host && d.port && d.nick) {
+      const host = d.host as string, port = d.port as number, nick = d.nick as string;
 
-    switch (type) {
-      case 'connect':
-        this.handleConnect(client, connectData as ConnectParams);
-        break;
-      case 'disconnect':
-        client.irc?.quit(reason ?? getConfig().quitMessage);
-        client.irc = null;
-        break;
-      case 'raw':
-        if (line) client.irc?.send(line);
-        break;
-    }
-  }
-
-  private handleConnect(client: Client, params: ConnectParams): void {
-    const config = getConfig();
-
-    if (config.allowedServers?.length) {
-      const allowed = config.allowedServers.some(
-        (s) => s.toLowerCase() === `${params.host}:${String(params.port)}`.toLowerCase()
-      );
-      if (!allowed) {
-        this.send(client.ws, 'sic-gateway-event', { type: 'error', message: 'Server not allowed' });
-        return;
+      if (cfg.allowedServers?.length && !cfg.allowedServers.includes(`${host}:${port}`)) {
+        return void this.send(client.ws, 'sic-gateway-event', { type: 'error', message: 'Server not allowed' });
       }
+
+      client.irc?.destroy();
+      const irc = client.irc = new IrcClient();
+
+      irc.on('socket_connected', () => this.send(client.ws, 'sic-irc-event', { type: 'socket_connected' }));
+      irc.on('connected', () => this.send(client.ws, 'sic-irc-event', { type: 'connected' }));
+      irc.on('close', () => this.send(client.ws, 'sic-irc-event', { type: 'close' }));
+      irc.on('error', (e: Error) => this.send(client.ws, 'sic-irc-event', { type: 'error', error: e.message }));
+      irc.on('raw', (line: string, fromServer: boolean) => {
+        log.debug(`[${client.id}] ${fromServer ? '>>' : '<<'} ${line}`);
+        this.send(client.ws, fromServer ? 'sic-irc-event' : 'sic-server-event', { type: 'raw', line });
+      });
+
+      irc.connect({
+        host, port, nick,
+        username: d.username as string | undefined,
+        realname: (d.realname as string) ?? cfg.realname,
+        password: d.password as string | undefined,
+        tls: d.tls as boolean | undefined,
+        webirc: cfg.webircPassword ? { password: cfg.webircPassword, gateway: cfg.webircGateway ?? 'gateway', hostname: `${client.ip}.web`, ip: client.ip } : undefined,
+      });
+      log.info(`[${client.id}] Connecting to ${host}:${port} as ${nick}`);
     }
-
-    client.irc?.destroy();
-    client.irc = new IrcClient();
-
-    const irc = client.irc;
-
-    irc.on('socket_connected', () => this.send(client.ws, 'sic-irc-event', { type: 'socket_connected' }));
-    irc.on('connected', () => this.send(client.ws, 'sic-irc-event', { type: 'connected' }));
-    irc.on('close', () => this.send(client.ws, 'sic-irc-event', { type: 'close' }));
-    irc.on('error', (err: Error) => this.send(client.ws, 'sic-irc-event', { type: 'error', error: err.message }));
-    irc.on('raw', (line: string, fromServer: boolean) => {
-      log.debug(`[${client.id}] ${fromServer ? '>>' : '<<'} ${line}`);
-      this.send(client.ws, fromServer ? 'sic-irc-event' : 'sic-server-event', { type: 'raw', line });
-    });
-
-    const webirc = config.webircPassword
-      ? { password: config.webircPassword, gateway: config.webircGateway ?? 'gateway', hostname: `${client.ip}.web`, ip: client.ip }
-      : undefined;
-
-    irc.connect({
-      host: params.host,
-      port: params.port,
-      nick: params.nick,
-      username: params.username,
-      realname: params.realname ?? config.realname,
-      password: params.password,
-      tls: params.tls,
-      webirc,
-    });
-
-    log.info(`[${client.id}] Connecting to ${params.host}:${String(params.port)} as ${params.nick}`);
   }
 
   private send(ws: WebSocket, event: string, data: Record<string, unknown>): void {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ event, data }));
-    }
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ event, data }));
   }
 
   start(): void {
-    const config = getConfig();
-    this.server.listen(config.port, config.host, () => {
-      log.success(`Gateway running on ${config.host}:${String(config.port)}${config.path}`);
-    });
+    const cfg = getConfig();
+    this.server.listen(cfg.port, cfg.host, () => log.success(`Gateway on ${cfg.host}:${cfg.port}${cfg.path}`));
   }
 
   stop(): void {
-    for (const client of this.clients.values()) {
-      client.irc?.quit(getConfig().quitMessage);
-      client.ws.close();
-    }
+    for (const c of this.clients.values()) { c.irc?.quit(getConfig().quitMessage); c.ws.close(); }
     this.clients.clear();
     this.wss.close();
     this.server.close();

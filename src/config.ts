@@ -1,8 +1,17 @@
-import type { GatewayConfig } from './types.js';
+export interface Config {
+  port: number;
+  host: string;
+  path: string;
+  maxClients: number;
+  maxConnectionsPerIp: number;
+  webircPassword?: string;
+  webircGateway?: string;
+  allowedServers?: string[];
+  quitMessage: string;
+  realname: string;
+}
 
-export type { GatewayConfig } from './types.js';
-
-const defaults: GatewayConfig = {
+const defaults: Config = {
   port: 8667,
   host: '0.0.0.0',
   path: '/irc',
@@ -12,13 +21,7 @@ const defaults: GatewayConfig = {
   realname: 'Simple IRC Client user',
 };
 
-let config: GatewayConfig = { ...defaults };
+let config: Config = { ...defaults };
 
-export function loadConfig(userConfig: Partial<GatewayConfig> = {}): GatewayConfig {
-  config = { ...defaults, ...userConfig };
-  return config;
-}
-
-export function getConfig(): GatewayConfig {
-  return config;
-}
+export const loadConfig = (c: Partial<Config> = {}): Config => config = { ...defaults, ...c };
+export const getConfig = (): Config => config;

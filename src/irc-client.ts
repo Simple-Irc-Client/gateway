@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events';
 import * as net from 'net';
 import * as tls from 'tls';
-import { decode, encode } from './encoding.js';
+import iconv from 'iconv-lite';
 
 export interface IrcOptions {
   host: string;
@@ -34,58 +34,44 @@ export class IrcClient extends EventEmitter {
 
     socket.once('connect', () => {
       this.emit('socket_connected');
-
       if (opts.webirc) {
-        const { password, gateway, hostname, ip } = opts.webirc;
-        this.send(`WEBIRC ${password} ${gateway} ${hostname} ${ip}`);
+        this.send(`WEBIRC ${opts.webirc.password} ${opts.webirc.gateway} ${opts.webirc.hostname} ${opts.webirc.ip}`);
       }
       if (opts.password) this.send(`PASS ${opts.password}`);
-
       this.send('CAP LS 302');
       this.send(`NICK ${opts.nick}`);
       this.send(`USER ${opts.username ?? opts.nick} 0 * :${opts.realname ?? opts.nick}`);
-
       this.pingTimer = setInterval(() => this.send(`PING :${Date.now()}`), 30000);
     });
 
     socket.on('data', (data: Buffer) => {
       this.buffer = Buffer.concat([this.buffer, data]);
-      let idx: number;
-      while ((idx = this.buffer.indexOf('\r\n')) !== -1) {
-        const line = decode(this.buffer.subarray(0, idx), this.encoding);
-        this.buffer = this.buffer.subarray(idx + 2);
-        if (line) this.handleLine(line);
+      let i: number;
+      while ((i = this.buffer.indexOf('\r\n')) !== -1) {
+        const line = this.decode(this.buffer.subarray(0, i));
+        this.buffer = this.buffer.subarray(i + 2);
+        if (line) {
+          this.emit('raw', line, true);
+          if (line.startsWith('PING ')) this.send(`PONG ${line.slice(5)}`);
+          else if (line.includes(' 001 ')) this.emit('connected');
+        }
       }
     });
 
-    socket.on('close', () => {
-      this.cleanup();
-      this.emit('close');
-    });
-
+    socket.on('close', () => { this.cleanup(); this.emit('close'); });
     socket.on('error', (err: Error) => this.emit('error', err));
-  }
-
-  private handleLine(line: string): void {
-    this.emit('raw', line, true);
-
-    if (line.startsWith('PING ')) {
-      this.send(`PONG ${line.slice(5)}`);
-    } else if (line.includes(' 001 ')) {
-      this.emit('connected');
-    }
   }
 
   send(line: string): void {
     if (this.socket?.writable) {
-      this.socket.write(encode(`${line}\r\n`, this.encoding));
+      this.socket.write(this.encode(`${line}\r\n`));
       this.emit('raw', line, false);
     }
   }
 
-  quit(message?: string): void {
+  quit(msg?: string): void {
     if (this.socket?.writable) {
-      this.send(message ? `QUIT :${message}` : 'QUIT');
+      this.send(msg ? `QUIT :${msg}` : 'QUIT');
       this.socket.end();
     }
     this.cleanup();
@@ -98,13 +84,16 @@ export class IrcClient extends EventEmitter {
   }
 
   private cleanup(): void {
-    if (this.pingTimer) {
-      clearInterval(this.pingTimer);
-      this.pingTimer = null;
-    }
+    if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null; }
   }
 
-  get connected(): boolean {
-    return this.socket?.writable ?? false;
+  private decode(buf: Buffer): string {
+    return this.encoding === 'utf8' ? buf.toString('utf8') : iconv.decode(buf, this.encoding);
   }
+
+  private encode(str: string): Buffer {
+    return this.encoding === 'utf8' ? Buffer.from(str, 'utf8') : iconv.encode(str, this.encoding);
+  }
+
+  get connected(): boolean { return this.socket?.writable ?? false; }
 }
