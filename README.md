@@ -2,6 +2,18 @@
 
 WebSocket to IRC gateway for Simple IRC Client.
 
+## Project Structure
+
+```
+src/
+├── config.ts      # Configuration interface and defaults
+├── gateway.ts     # WebSocket server and client management
+├── irc-client.ts  # IRC protocol client with encoding support
+├── logger.ts      # Colored console logging
+├── main.ts        # Entry point
+└── __tests__/     # Unit tests
+```
+
 ## Local Development
 
 ```bash
@@ -10,6 +22,14 @@ npm start
 ```
 
 Gateway runs on `ws://localhost:8667/irc`
+
+## Testing
+
+```bash
+npm test           # Run tests once
+npm run test:watch # Run tests in watch mode
+npm run lint       # TypeScript + ESLint checks
+```
 
 ## Server Deployment
 
@@ -25,7 +45,7 @@ sudo apt install -y nodejs
 ```bash
 git clone <repo> /opt/irc-gateway
 cd /opt/irc-gateway/gateway
-npm install --production
+npm ci
 npm run build
 ```
 
