@@ -22,7 +22,7 @@ describe('IrcClient', () => {
     await new Promise<void>((resolve) => {
       server.listen(0, '127.0.0.1', () => {
         const addr = server.address();
-        serverPort = typeof addr === 'object' ? addr!.port : 0;
+        serverPort = typeof addr === 'object' && addr !== null ? addr.port : 0;
         resolve();
       });
     });
@@ -154,7 +154,7 @@ describe('IrcClient line parsing', () => {
     await new Promise<void>((resolve) => {
       server.listen(0, '127.0.0.1', () => {
         const addr = server.address();
-        serverPort = typeof addr === 'object' ? addr!.port : 0;
+        serverPort = typeof addr === 'object' && addr !== null ? addr.port : 0;
         resolve();
       });
     });

@@ -1,5 +1,5 @@
 import { Gateway } from './gateway.js';
-import { loadConfig, getConfig, type GatewayConfig } from './config.js';
+import { loadConfig, type GatewayConfig } from './config.js';
 import * as log from './logger.js';
 
 export { Gateway } from './gateway.js';

@@ -1,4 +1,5 @@
 import { WebSocketServer, WebSocket } from 'ws';
+import type { Duplex } from 'stream';
 import { createServer, type IncomingMessage } from 'http';
 import { getConfig } from './config.js';
 import { IrcClient } from './irc-client.js';
@@ -10,6 +11,15 @@ interface Client {
   ip: string;
   ws: WebSocket;
   irc: IrcClient | null;
+}
+
+interface ClientMessage {
+  event: string;
+  data: {
+    type: string;
+    reason?: string;
+    line?: string;
+  } & Partial<ConnectParams>;
 }
 
 let clientId = 0;
@@ -27,9 +37,9 @@ export class Gateway {
     this.server.on('upgrade', (req, socket, head) => this.handleUpgrade(req, socket, head));
   }
 
-  private handleUpgrade(req: IncomingMessage, socket: any, head: Buffer): void {
+  private handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
     const config = getConfig();
-    const path = new URL(req.url ?? '/', `http://${req.headers.host}`).pathname;
+    const path = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`).pathname;
 
     if (path !== config.path) {
       socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
@@ -64,12 +74,12 @@ export class Gateway {
   }
 
   private addClient(ws: WebSocket, ip: string): void {
-    const id = `c${++clientId}`;
+    const id = `c${String(++clientId)}`;
     const client: Client = { id, ip, ws, irc: null };
 
     this.clients.set(id, client);
     this.ipCounts.set(ip, (this.ipCounts.get(ip) ?? 0) + 1);
-    log.info(`[${id}] Connected from ${ip} (${this.clients.size} clients)`);
+    log.info(`[${id}] Connected from ${ip} (${String(this.clients.size)} clients)`);
 
     ws.on('message', (data) => this.onMessage(client, data.toString()));
     ws.on('close', () => this.removeClient(client));
@@ -84,31 +94,31 @@ export class Gateway {
     if (count <= 0) this.ipCounts.delete(client.ip);
     else this.ipCounts.set(client.ip, count);
 
-    log.info(`[${client.id}] Disconnected (${this.clients.size} clients)`);
+    log.info(`[${client.id}] Disconnected (${String(this.clients.size)} clients)`);
   }
 
   private onMessage(client: Client, raw: string): void {
-    let msg: { event: string; data: any };
+    let msg: ClientMessage;
     try {
-      msg = JSON.parse(raw);
+      msg = JSON.parse(raw) as ClientMessage;
     } catch {
       return;
     }
 
     if (msg.event !== 'sic-client-event') return;
 
-    const { type, ...data } = msg.data;
+    const { type, reason, line, ...connectData } = msg.data;
 
     switch (type) {
       case 'connect':
-        this.handleConnect(client, data as ConnectParams);
+        this.handleConnect(client, connectData as ConnectParams);
         break;
       case 'disconnect':
-        client.irc?.quit(data.reason ?? getConfig().quitMessage);
+        client.irc?.quit(reason ?? getConfig().quitMessage);
         client.irc = null;
         break;
       case 'raw':
-        client.irc?.send(data.line);
+        if (line) client.irc?.send(line);
         break;
     }
   }
@@ -118,7 +128,7 @@ export class Gateway {
 
     if (config.allowedServers?.length) {
       const allowed = config.allowedServers.some(
-        (s) => s.toLowerCase() === `${params.host}:${params.port}`.toLowerCase()
+        (s) => s.toLowerCase() === `${params.host}:${String(params.port)}`.toLowerCase()
       );
       if (!allowed) {
         this.send(client.ws, 'sic-gateway-event', { type: 'error', message: 'Server not allowed' });
@@ -155,10 +165,10 @@ export class Gateway {
       webirc,
     });
 
-    log.info(`[${client.id}] Connecting to ${params.host}:${params.port} as ${params.nick}`);
+    log.info(`[${client.id}] Connecting to ${params.host}:${String(params.port)} as ${params.nick}`);
   }
 
-  private send(ws: WebSocket, event: string, data: any): void {
+  private send(ws: WebSocket, event: string, data: Record<string, unknown>): void {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ event, data }));
     }
@@ -167,7 +177,7 @@ export class Gateway {
   start(): void {
     const config = getConfig();
     this.server.listen(config.port, config.host, () => {
-      log.success(`Gateway running on ${config.host}:${config.port}${config.path}`);
+      log.success(`Gateway running on ${config.host}:${String(config.port)}${config.path}`);
     });
   }
 

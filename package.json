@@ -8,7 +8,8 @@
     "start": "node --import tsx ./server.ts",
     "dev": "tsx watch ./server.ts",
     "build": "tsc && node build.js",
-    "lint": "tsc --noEmit && eslint src/**/*.ts",
+    "lint": "tsc --noEmit && eslint src/",
+    "lint:fix": "eslint src/ --fix",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -17,6 +18,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",
+    "@stylistic/eslint-plugin": "^5.7.1",
     "@types/node": "^22.0.0",
     "@types/ws": "^8.18.1",
     "esbuild": "^0.27.2",
@@ -28,7 +30,7 @@
     "vitest": "^4.0.17"
   },
   "dependencies": {
-    "ws": "^8.19.0",
-    "iconv-lite": "^0.6.3"
+    "iconv-lite": "^0.6.3",
+    "ws": "^8.19.0"
   }
 }
