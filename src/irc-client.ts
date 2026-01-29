@@ -1,179 +1,91 @@
 import { EventEmitter } from 'events';
 import * as net from 'net';
 import * as tls from 'tls';
-import { toUtf8, fromUtf8 } from './encoding.js';
-import { buildWebircCommand, resolveClientHostname } from './webirc.js';
-import type { WebircParams } from './types.js';
+import { decode, encode } from './encoding.js';
 
-export interface IrcClientOptions {
+export interface IrcOptions {
   host: string;
   port: number;
   nick: string;
-  username: string;
-  realname: string;
-  encoding?: string;
-  tls?: boolean;
+  username?: string;
+  realname?: string;
   password?: string;
-  pingInterval?: number;
-  pingTimeout?: number;
-  webirc?: WebircParams;
-}
-
-export interface IrcClientEvents {
-  'socket_connected': () => void;
-  'socket_close': () => void;
-  'connected': (nick: string) => void;
-  'close': () => void;
-  'raw': (line: string, fromServer: boolean) => void;
-  'error': (error: Error) => void;
+  tls?: boolean;
+  encoding?: string;
+  webirc?: { password: string; gateway: string; hostname: string; ip: string };
 }
 
 export class IrcClient extends EventEmitter {
   private socket: net.Socket | tls.TLSSocket | null = null;
-  private options: IrcClientOptions | null = null;
-  private buffer: Buffer = Buffer.alloc(0);
-  private encoding: string = 'utf8';
-  private pingInterval: ReturnType<typeof setInterval> | null = null;
-  private pingTimeout: ReturnType<typeof setTimeout> | null = null;
-  private registered = false;
+  private buffer = Buffer.alloc(0);
+  private encoding = 'utf8';
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
 
-  connect(options: IrcClientOptions): void {
-    if (this.socket) {
-      this.destroy();
-    }
-
-    this.options = options;
-    this.encoding = options.encoding ?? 'utf8';
+  connect(opts: IrcOptions): void {
+    this.destroy();
+    this.encoding = opts.encoding ?? 'utf8';
     this.buffer = Buffer.alloc(0);
-    this.registered = false;
 
-    const connectOptions = {
-      host: options.host,
-      port: options.port,
-      rejectUnauthorized: false,
-    };
+    const socket = opts.tls
+      ? tls.connect({ host: opts.host, port: opts.port, rejectUnauthorized: false })
+      : net.connect({ host: opts.host, port: opts.port });
 
-    if (options.tls) {
-      this.socket = tls.connect(connectOptions, () => this.onSocketConnect());
-    } else {
-      this.socket = net.connect(connectOptions, () => this.onSocketConnect());
-    }
+    this.socket = socket;
 
-    this.socket.on('data', (data: Buffer) => this.onData(data));
-    this.socket.on('close', () => this.onSocketClose());
-    this.socket.on('error', (error: Error) => this.onSocketError(error));
-  }
+    socket.once('connect', () => {
+      this.emit('socket_connected');
 
-  private onSocketConnect(): void {
-    this.emit('socket_connected');
-
-    if (!this.options) return;
-
-    if (this.options.webirc) {
-      const webircCmd = buildWebircCommand(this.options.webirc);
-      this.sendRaw(webircCmd);
-    }
-
-    if (this.options.password) {
-      this.sendRaw(`PASS ${this.options.password}`);
-    }
-
-    this.sendRaw('CAP LS 302');
-    this.sendRaw(`NICK ${this.options.nick}`);
-    this.sendRaw(`USER ${this.options.username} 0 * :${this.options.realname}`);
-
-    this.startPingInterval();
-  }
-
-  private onData(data: Buffer): void {
-    this.resetPingTimeout();
-    this.buffer = Buffer.concat([this.buffer, data]);
-
-    let lineEnd: number;
-    while ((lineEnd = this.buffer.indexOf('\r\n')) !== -1) {
-      const lineBuffer = this.buffer.subarray(0, lineEnd);
-      this.buffer = this.buffer.subarray(lineEnd + 2);
-
-      const line = toUtf8(lineBuffer, this.encoding);
-      if (line.length > 0) {
-        this.processLine(line);
+      if (opts.webirc) {
+        const { password, gateway, hostname, ip } = opts.webirc;
+        this.send(`WEBIRC ${password} ${gateway} ${hostname} ${ip}`);
       }
-    }
+      if (opts.password) this.send(`PASS ${opts.password}`);
+
+      this.send('CAP LS 302');
+      this.send(`NICK ${opts.nick}`);
+      this.send(`USER ${opts.username ?? opts.nick} 0 * :${opts.realname ?? opts.nick}`);
+
+      this.pingTimer = setInterval(() => this.send(`PING :${Date.now()}`), 30000);
+    });
+
+    socket.on('data', (data: Buffer) => {
+      this.buffer = Buffer.concat([this.buffer, data]);
+      let idx: number;
+      while ((idx = this.buffer.indexOf('\r\n')) !== -1) {
+        const line = decode(this.buffer.subarray(0, idx), this.encoding);
+        this.buffer = this.buffer.subarray(idx + 2);
+        if (line) this.handleLine(line);
+      }
+    });
+
+    socket.on('close', () => {
+      this.cleanup();
+      this.emit('close');
+    });
+
+    socket.on('error', (err: Error) => this.emit('error', err));
   }
 
-  private processLine(line: string): void {
+  private handleLine(line: string): void {
     this.emit('raw', line, true);
 
     if (line.startsWith('PING ')) {
-      const pingArg = line.substring(5);
-      this.sendRaw(`PONG ${pingArg}`);
-      return;
-    }
-
-    if (!this.registered && line.includes(' 001 ')) {
-      this.registered = true;
-      this.emit('connected', this.options?.nick ?? '');
+      this.send(`PONG ${line.slice(5)}`);
+    } else if (line.includes(' 001 ')) {
+      this.emit('connected');
     }
   }
 
-  sendRaw(line: string): void {
-    if (!this.socket || this.socket.destroyed) return;
-
-    const buffer = fromUtf8(`${line}\r\n`, this.encoding);
-    this.socket.write(buffer);
-    this.emit('raw', line, false);
-  }
-
-  setEncoding(encoding: string): void {
-    this.encoding = encoding;
-  }
-
-  private onSocketClose(): void {
-    this.cleanup();
-    this.emit('socket_close');
-    this.emit('close');
-  }
-
-  private onSocketError(error: Error): void {
-    this.emit('error', error);
-  }
-
-  private startPingInterval(): void {
-    const interval = (this.options?.pingInterval ?? 30) * 1000;
-    this.pingInterval = setInterval(() => {
-      if (this.socket && !this.socket.destroyed) {
-        this.sendRaw(`PING :${Date.now()}`);
-      }
-    }, interval);
-  }
-
-  private resetPingTimeout(): void {
-    if (this.pingTimeout) {
-      clearTimeout(this.pingTimeout);
-    }
-
-    const timeout = (this.options?.pingTimeout ?? 120) * 1000;
-    this.pingTimeout = setTimeout(() => {
-      this.emit('error', new Error('Ping timeout'));
-      this.destroy();
-    }, timeout);
-  }
-
-  private cleanup(): void {
-    if (this.pingInterval) {
-      clearInterval(this.pingInterval);
-      this.pingInterval = null;
-    }
-    if (this.pingTimeout) {
-      clearTimeout(this.pingTimeout);
-      this.pingTimeout = null;
+  send(line: string): void {
+    if (this.socket?.writable) {
+      this.socket.write(encode(`${line}\r\n`, this.encoding));
+      this.emit('raw', line, false);
     }
   }
 
   quit(message?: string): void {
-    if (this.socket && !this.socket.destroyed) {
-      const quitCmd = message ? `QUIT :${message}` : 'QUIT';
-      this.sendRaw(quitCmd);
+    if (this.socket?.writable) {
+      this.send(message ? `QUIT :${message}` : 'QUIT');
       this.socket.end();
     }
     this.cleanup();
@@ -181,15 +93,18 @@ export class IrcClient extends EventEmitter {
 
   destroy(): void {
     this.cleanup();
-    if (this.socket) {
-      this.socket.destroy();
-      this.socket = null;
+    this.socket?.destroy();
+    this.socket = null;
+  }
+
+  private cleanup(): void {
+    if (this.pingTimer) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
     }
   }
 
-  isConnected(): boolean {
-    return this.socket !== null && !this.socket.destroyed;
+  get connected(): boolean {
+    return this.socket?.writable ?? false;
   }
 }
-
-export { resolveClientHostname };
