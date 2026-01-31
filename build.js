@@ -11,6 +11,9 @@ await esbuild.build({
   banner: {
     js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);",
   },
+  define: {
+    __PRODUCTION__: 'true',
+  },
 });
 
 console.log('Build complete: dist/gateway.js');

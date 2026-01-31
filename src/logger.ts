@@ -5,6 +5,9 @@
  * Each log level has a distinct color for easy visual identification.
  */
 
+// Set by esbuild during production build
+declare const __PRODUCTION__: boolean;
+
 // ============================================================================
 // ANSI Color Codes
 // ============================================================================
@@ -52,9 +55,13 @@ function formatMessage(message: string, color: string): string {
 /**
  * Log a debug message (gray)
  *
- * Use for verbose/detailed information useful during development
+ * Use for verbose/detailed information useful during development.
+ * Disabled in production builds.
  */
 export function debug(message: string): void {
+  if (typeof __PRODUCTION__ !== 'undefined' && __PRODUCTION__) {
+    return;
+  }
   console.log(formatMessage(message, COLORS.gray));
 }
 
