@@ -70,8 +70,15 @@ const IRC_LINE_ENDING = '\r\n';
 /** Interval for sending PING keepalive messages (30 seconds) */
 const PING_INTERVAL_MS = 30000;
 
-/** IRC numeric for successful registration (RPL_WELCOME) */
-const RPL_WELCOME = ' 001 ';
+/**
+ * Pattern to match RPL_WELCOME (001) from a server
+ *
+ * Format: :server.name 001 nickname :Welcome message
+ * - Must start with : (server prefix)
+ * - Source must not contain ! or @ (those indicate a user hostmask)
+ * - Command must be exactly 001
+ */
+const RPL_WELCOME_PATTERN = /^:[^\s!@]+ 001 /;
 
 // ============================================================================
 // IRC Client Class
@@ -261,8 +268,8 @@ export class IrcClient extends EventEmitter {
       const pingData = line.slice(5);
       this.send(`PONG ${pingData}`);
     }
-    // Detect successful registration (numeric 001)
-    else if (line.includes(RPL_WELCOME)) {
+    // Detect successful registration (numeric 001 from server)
+    else if (RPL_WELCOME_PATTERN.test(line)) {
       this.emit('connected');
     }
   }
