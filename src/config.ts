@@ -83,13 +83,10 @@ let currentConfig: Config = { ...DEFAULT_CONFIG };
  */
 export function loadConfig(partialConfig: Partial<Config> = {}): Config {
   // Filter out undefined values to prevent them from overwriting defaults
-  const definedValues: Partial<Config> = {};
-
-  for (const [key, value] of Object.entries(partialConfig)) {
-    if (value !== undefined) {
-      definedValues[key as keyof Config] = value as Config[keyof Config];
-    }
-  }
+  const definedEntries = Object.entries(partialConfig).filter(
+    ([, value]) => value !== undefined
+  );
+  const definedValues = Object.fromEntries(definedEntries) as Partial<Config>;
 
   currentConfig = { ...DEFAULT_CONFIG, ...definedValues };
   return currentConfig;

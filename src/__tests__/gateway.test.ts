@@ -121,7 +121,13 @@ describe('Gateway', () => {
     ws.send(
       JSON.stringify({
         event: 'sic-client-event',
-        data: { type: 'connect', nick: 'test', host: 'irc.notallowed.com', port: 6667 },
+        data: {
+          type: 'connect',
+          event: {
+            nick: 'test',
+            server: { host: 'irc.notallowed.com', port: 6667 },
+          },
+        },
       })
     );
 
