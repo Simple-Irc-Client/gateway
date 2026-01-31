@@ -59,14 +59,17 @@ export class Gateway {
 
     const d = msg.data;
     const type = d.type as string;
+    // Support nested event format from core: { type, event: { nick, server: { host, port, ... } } }
+    const evt = (d.event as Record<string, unknown>) ?? d;
+    const srv = (evt.server as Record<string, unknown>) ?? evt;
 
     if (type === 'disconnect') {
-      client.irc?.quit((d.reason as string) ?? cfg.quitMessage);
+      client.irc?.quit((evt.quitReason as string) ?? cfg.quitMessage);
       client.irc = null;
-    } else if (type === 'raw' && d.line) {
-      client.irc?.send(d.line as string);
-    } else if (type === 'connect' && d.host && d.port && d.nick) {
-      const host = d.host as string, port = d.port as number, nick = d.nick as string;
+    } else if (type === 'raw' && evt.rawData) {
+      client.irc?.send(evt.rawData as string);
+    } else if (type === 'connect' && srv.host && srv.port && evt.nick) {
+      const host = srv.host as string, port = srv.port as number, nick = evt.nick as string;
 
       if (cfg.allowedServers?.length && !cfg.allowedServers.includes(`${host}:${port}`)) {
         return void this.send(client.ws, 'sic-gateway-event', { type: 'error', message: 'Server not allowed' });
@@ -86,10 +89,11 @@ export class Gateway {
 
       irc.connect({
         host, port, nick,
-        username: d.username as string | undefined,
-        realname: (d.realname as string) ?? cfg.realname,
-        password: d.password as string | undefined,
-        tls: d.tls as boolean | undefined,
+        username: evt.username as string | undefined,
+        realname: (evt.realname as string) ?? cfg.realname,
+        password: evt.password as string | undefined,
+        tls: srv.tls as boolean | undefined,
+        encoding: srv.encoding as string | undefined,
         webirc: cfg.webircPassword ? { password: cfg.webircPassword, gateway: cfg.webircGateway ?? 'gateway', hostname: `${client.ip}.web`, ip: client.ip } : undefined,
       });
       log.info(`[${client.id}] Connecting to ${host}:${port} as ${nick}`);
