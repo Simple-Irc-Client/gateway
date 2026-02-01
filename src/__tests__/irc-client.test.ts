@@ -205,6 +205,33 @@ describe('IrcClient line parsing', () => {
     expect(onConnected).toHaveBeenCalled();
   });
 
+  it('emits connected on IRCv3 tagged 001 numeric', async () => {
+    const onConnected = vi.fn();
+    client.on('connected', onConnected);
+
+    client.connect({ host: '127.0.0.1', port: serverPort, nick: 'testnick' });
+    await new Promise((r) => setTimeout(r, 50));
+
+    serverSocket?.write('@time=2026-02-01T00:07:46.552Z :lead.libera.chat 001 testnick :Welcome\r\n');
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(onConnected).toHaveBeenCalled();
+  });
+
+  it('does not emit connected on user message containing 001', async () => {
+    const onConnected = vi.fn();
+    client.on('connected', onConnected);
+
+    client.connect({ host: '127.0.0.1', port: serverPort, nick: 'testnick' });
+    await new Promise((r) => setTimeout(r, 50));
+
+    // User message with 001 in it should NOT trigger connected
+    serverSocket?.write(':nick!user@host PRIVMSG #channel :error 001 happened\r\n');
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(onConnected).not.toHaveBeenCalled();
+  });
+
   it('handles partial lines correctly', async () => {
     const onRaw = vi.fn();
     client.on('raw', onRaw);

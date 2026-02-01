@@ -73,12 +73,15 @@ const PING_INTERVAL_MS = 30000;
 /**
  * Pattern to match RPL_WELCOME (001) from a server
  *
- * Format: :server.name 001 nickname :Welcome message
- * - Must start with : (server prefix)
+ * Format: [:server.name 001 nickname :Welcome message]
+ * Or with IRCv3 tags: [@time=... :server.name 001 nickname :Welcome message]
+ *
+ * - Optional IRCv3 message tags (@key=value;... ) at the start
+ * - Server prefix starting with :
  * - Source must not contain ! or @ (those indicate a user hostmask)
  * - Command must be exactly 001
  */
-const RPL_WELCOME_PATTERN = /^:[^\s!@]+ 001 /;
+const RPL_WELCOME_PATTERN = /^(@\S+ )?:[^\s!@]+ 001 /;
 
 // ============================================================================
 // IRC Client Class
