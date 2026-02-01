@@ -10,7 +10,7 @@ describe('config', () => {
     const config = getConfig();
     expect(config.port).toBe(8667);
     expect(config.host).toBe('0.0.0.0');
-    expect(config.path).toBe('/irc');
+    expect(config.path).toBe('/webirc');
     expect(config.maxClients).toBe(1000);
     expect(config.maxConnectionsPerIp).toBe(10);
   });

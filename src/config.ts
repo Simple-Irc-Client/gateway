@@ -19,7 +19,7 @@ export interface Config {
   /** Host/IP to bind to (default: 0.0.0.0 for all interfaces) */
   host: string;
 
-  /** WebSocket path for client connections (default: /irc) */
+  /** WebSocket path for client connections (default: /webirc) */
   path: string;
 
   /** Maximum number of simultaneous client connections (default: 1000) */
@@ -54,7 +54,7 @@ export interface Config {
 const DEFAULT_CONFIG: Config = {
   port: 8667,
   host: '0.0.0.0',
-  path: '/irc',
+  path: '/webirc',
   maxClients: 1000,
   maxConnectionsPerIp: 10,
   quitMessage: 'Simple IRC Client',

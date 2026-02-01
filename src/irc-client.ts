@@ -19,13 +19,25 @@ import iconv from 'iconv-lite';
 // ============================================================================
 
 /**
- * Options for connecting to an IRC server
+ * Base socket connection options
  */
-export interface IrcConnectionOptions {
+interface SocketConnectionOptions {
   /** IRC server hostname */
   host: string;
   /** IRC server port */
   port: number;
+  /** Whether to use TLS encryption */
+  tls?: boolean;
+  /** Character encoding for messages (defaults to utf8) */
+  encoding?: string;
+  /** WEBIRC configuration for passing real client IP to server */
+  webirc?: WebircConfig;
+}
+
+/**
+ * Options for connecting to an IRC server
+ */
+export interface IrcConnectionOptions extends SocketConnectionOptions {
   /** Nickname to use */
   nick: string;
   /** Username (defaults to nick if not provided) */
@@ -34,13 +46,12 @@ export interface IrcConnectionOptions {
   realname?: string;
   /** Server password (sent with PASS command) */
   password?: string;
-  /** Whether to use TLS encryption */
-  tls?: boolean;
-  /** Character encoding for messages (defaults to utf8) */
-  encoding?: string;
-  /** WEBIRC configuration for passing real client IP to server */
-  webirc?: WebircConfig;
 }
+
+/**
+ * Options for raw connection (client handles registration)
+ */
+export type IrcRawConnectionOptions = SocketConnectionOptions;
 
 /**
  * WEBIRC configuration for identifying real client IPs to IRC servers
@@ -163,9 +174,69 @@ export class IrcClient extends EventEmitter {
   }
 
   /**
+   * Connect to an IRC server in raw mode
+   *
+   * Establishes a TCP or TLS connection but does NOT perform IRC registration.
+   * The client is expected to send NICK, USER, CAP, etc. themselves.
+   * Only WEBIRC is sent if configured (must be first command per IRC spec).
+   */
+  connectRaw(options: IrcRawConnectionOptions): void {
+    // Clean up any existing connection
+    this.destroy();
+
+    // Initialize connection state
+    this.characterEncoding = options.encoding ?? 'utf8';
+    this.receiveBuffer = Buffer.alloc(0);
+
+    // Create socket (TLS or plain TCP)
+    const socket = this.createSocket(options);
+    this.socket = socket;
+
+    // Handle successful connection
+    socket.once('connect', () => {
+      this.handleRawSocketConnected(options);
+    });
+
+    // Handle incoming data
+    socket.on('data', (data: Buffer) => {
+      this.handleIncomingData(data);
+    });
+
+    // Handle connection close
+    socket.on('close', () => {
+      this.handleSocketClosed();
+    });
+
+    // Handle connection errors
+    socket.on('error', (error: Error) => {
+      this.emit('error', error);
+    });
+  }
+
+  /**
+   * Handle successful socket connection in raw mode
+   *
+   * Only sends WEBIRC if configured, then lets client handle registration
+   */
+  private handleRawSocketConnected(options: IrcRawConnectionOptions): void {
+    this.emit('socket_connected');
+
+    // Send WEBIRC command if configured (must be first)
+    if (options.webirc) {
+      this.send(
+        `WEBIRC ${options.webirc.password} ${options.webirc.gateway} ` +
+        `${options.webirc.hostname} ${options.webirc.ip}`
+      );
+    }
+
+    // Start keepalive ping timer
+    this.startPingTimer();
+  }
+
+  /**
    * Create a TCP or TLS socket based on connection options
    */
-  private createSocket(options: IrcConnectionOptions): net.Socket | tls.TLSSocket {
+  private createSocket(options: SocketConnectionOptions): net.Socket | tls.TLSSocket {
     const connectionConfig = {
       host: options.host,
       port: options.port,

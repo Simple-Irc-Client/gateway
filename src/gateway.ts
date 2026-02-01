@@ -2,11 +2,21 @@
  * WebSocket Gateway for Simple IRC Client
  *
  * This gateway acts as a bridge between web browsers and IRC servers.
- * Web clients connect via WebSocket, and the gateway manages TCP/TLS
- * connections to IRC servers on their behalf.
+ * Web clients connect via WebSocket using direct IRC protocol (raw IRC lines).
  *
  * Architecture:
- * [Browser] <--WebSocket--> [Gateway] <--TCP/TLS--> [IRC Server]
+ * [Browser] <--WebSocket (raw IRC)--> [Gateway] <--TCP/TLS--> [IRC Server]
+ *
+ * Connection URL format:
+ * ws://gateway:port/webirc?host=irc.example.com&port=6697&tls=true&encoding=utf8
+ *
+ * Required query parameters:
+ * - host: IRC server hostname
+ * - port: IRC server port
+ *
+ * Optional query parameters:
+ * - tls: Use TLS (true/false, default: false)
+ * - encoding: Character encoding (default: utf8)
  */
 
 import { WebSocketServer, WebSocket } from 'ws';
@@ -32,30 +42,13 @@ interface ConnectedClient {
   webSocket: WebSocket;
   /** IRC connection to the server (null if not connected to IRC) */
   ircClient: IrcClient | null;
-}
-
-/**
- * Message format received from the web client
- */
-interface ClientMessage {
-  event?: string;
-  data?: {
-    type?: string;
-    event?: {
-      nick?: string;
-      username?: string;
-      realname?: string;
-      password?: string;
-      quitReason?: string;
-      rawData?: string;
-      server?: {
-        host?: string;
-        port?: number;
-        tls?: boolean;
-        encoding?: string;
-      };
-    };
-  };
+  /** Server configuration from query parameters */
+  serverConfig: {
+    host: string;
+    port: number;
+    tls: boolean;
+    encoding: string;
+  } | null;
 }
 
 // ============================================================================
@@ -69,8 +62,8 @@ let clientIdCounter = 0;
  * WebSocket Gateway Server
  *
  * Manages WebSocket connections from web clients and creates IRC connections
- * to servers on their behalf. Handles rate limiting, connection management,
- * and message routing between clients and IRC servers.
+ * to servers on their behalf. Uses direct IRC protocol (raw IRC lines) instead
+ * of JSON wrapping.
  */
 export class Gateway {
   /** HTTP server for handling WebSocket upgrades */
@@ -101,8 +94,8 @@ export class Gateway {
   /**
    * Handle incoming WebSocket upgrade requests
    *
-   * Validates the request path, checks rate limits, and establishes
-   * the WebSocket connection if all checks pass.
+   * Validates the request path, parses server configuration from query params,
+   * checks rate limits, and establishes the WebSocket connection if all checks pass.
    */
   private handleWebSocketUpgrade(
     request: IncomingMessage,
@@ -111,7 +104,7 @@ export class Gateway {
   ): void {
     const config = getConfig();
 
-    // Parse the request URL to get the path
+    // Parse the request URL to get the path and query parameters
     const requestUrl = new URL(
       request.url ?? '/',
       `http://${request.headers.host ?? 'localhost'}`
@@ -132,6 +125,28 @@ export class Gateway {
       return;
     }
 
+    // Parse server configuration from query parameters
+    const host = requestUrl.searchParams.get('host');
+    const portStr = requestUrl.searchParams.get('port');
+    const port = portStr ? parseInt(portStr, 10) : null;
+    const tls = requestUrl.searchParams.get('tls') === 'true';
+    const encoding = requestUrl.searchParams.get('encoding') ?? 'utf8';
+
+    // Validate required parameters
+    if (!host || !port || isNaN(port)) {
+      this.rejectConnection(socket, 400, 'Bad Request - Missing host or port');
+      return;
+    }
+
+    // Check if server is in allowed list (if configured)
+    if (config.allowedServers?.length) {
+      const serverAddress = `${host}:${port}`;
+      if (!config.allowedServers.includes(serverAddress)) {
+        this.rejectConnection(socket, 403, 'Forbidden - Server not allowed');
+        return;
+      }
+    }
+
     // Check per-IP connection limit
     const currentIpConnections = this.connectionsPerIp.get(clientIp) ?? 0;
     if (currentIpConnections >= config.maxConnectionsPerIp) {
@@ -147,7 +162,7 @@ export class Gateway {
 
     // Accept the WebSocket connection
     this.webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
-      this.handleNewClient(webSocket, clientIp);
+      this.handleNewClient(webSocket, clientIp, { host, port, tls, encoding });
     });
   }
 
@@ -162,7 +177,11 @@ export class Gateway {
   /**
    * Handle a newly connected WebSocket client
    */
-  private handleNewClient(webSocket: WebSocket, clientIp: string): void {
+  private handleNewClient(
+    webSocket: WebSocket,
+    clientIp: string,
+    serverConfig: { host: string; port: number; tls: boolean; encoding: string }
+  ): void {
     const config = getConfig();
 
     // Generate unique client ID
@@ -174,6 +193,7 @@ export class Gateway {
       ipAddress: clientIp,
       webSocket: webSocket,
       ircClient: null,
+      serverConfig: serverConfig,
     };
 
     // Track the client
@@ -181,9 +201,12 @@ export class Gateway {
     this.incrementIpConnectionCount(clientIp);
 
     logger.info(
-      `[${clientId}] Client connected from ${clientIp} ` +
+      `[${clientId}] Client connected from ${clientIp}, target: ${serverConfig.host}:${serverConfig.port} ` +
       `(${this.connectedClients.size} total clients)`
     );
+
+    // Create IRC client and connect immediately
+    this.connectToIrc(client, config);
 
     // Set up WebSocket event handlers
     webSocket.on('message', (data) => {
@@ -193,6 +216,41 @@ export class Gateway {
     webSocket.on('close', () => {
       this.handleClientDisconnect(client, config.quitMessage);
     });
+  }
+
+  /**
+   * Connect to IRC server for a client
+   */
+  private connectToIrc(client: ConnectedClient, config: ReturnType<typeof getConfig>): void {
+    if (!client.serverConfig) return;
+
+    // Create new IRC client
+    const ircClient = new IrcClient();
+    client.ircClient = ircClient;
+
+    // Set up IRC event handlers
+    this.setupIrcEventHandlers(client, ircClient);
+
+    // Build WEBIRC configuration if password is set
+    const webircConfig = config.webircPassword
+      ? {
+          password: config.webircPassword,
+          gateway: config.webircGateway ?? 'gateway',
+          hostname: `${client.ipAddress}.web`,
+          ip: client.ipAddress,
+        }
+      : undefined;
+
+    // Connect to IRC server (but don't send NICK/USER - client will do that)
+    ircClient.connectRaw({
+      host: client.serverConfig.host,
+      port: client.serverConfig.port,
+      tls: client.serverConfig.tls,
+      encoding: client.serverConfig.encoding,
+      webirc: webircConfig,
+    });
+
+    logger.info(`[${client.id}] Connecting to ${client.serverConfig.host}:${client.serverConfig.port}`);
   }
 
   /**
@@ -247,184 +305,49 @@ export class Gateway {
   /**
    * Handle incoming message from a web client
    *
-   * Parses the message and routes it to the appropriate handler based on type:
-   * - connect: Establish IRC connection
-   * - disconnect: Close IRC connection
-   * - raw: Send raw IRC command
+   * Messages are raw IRC commands (e.g., "NICK user", "PRIVMSG #channel :hello")
+   * which are forwarded directly to the IRC server.
    */
   private handleClientMessage(client: ConnectedClient, rawMessage: string): void {
-    const config = getConfig();
-
-    // Parse the JSON message
-    let message: ClientMessage;
-    try {
-      message = JSON.parse(rawMessage) as ClientMessage;
-    } catch {
-      // Invalid JSON, ignore the message
-      return;
-    }
-
-    // Validate message format
-    if (message.event !== 'sic-client-event' || !message.data) {
-      return;
-    }
-
-    const messageType = message.data.type;
-    const eventData = message.data.event ?? {};
-    const serverData = eventData.server ?? {};
-
-    // Route message to appropriate handler
-    switch (messageType) {
-      case 'disconnect':
-        this.handleDisconnectCommand(client, eventData.quitReason, config.quitMessage);
-        break;
-
-      case 'raw':
-        this.handleRawCommand(client, eventData.rawData);
-        break;
-
-      case 'connect':
-        this.handleConnectCommand(client, eventData, serverData, config);
-        break;
-    }
-  }
-
-  /**
-   * Handle disconnect command from client
-   */
-  private handleDisconnectCommand(
-    client: ConnectedClient,
-    quitReason: string | undefined,
-    defaultQuitMessage: string
-  ): void {
+    // Forward raw IRC command to IRC server
     if (client.ircClient) {
-      client.ircClient.quit(quitReason ?? defaultQuitMessage);
-      client.ircClient = null;
-    }
-  }
-
-  /**
-   * Handle raw IRC command from client
-   */
-  private handleRawCommand(client: ConnectedClient, rawData: string | undefined): void {
-    if (rawData && client.ircClient) {
-      client.ircClient.send(rawData);
-    }
-  }
-
-  /**
-   * Handle connect command from client
-   *
-   * Creates a new IRC connection to the specified server
-   */
-  private handleConnectCommand(
-    client: ConnectedClient,
-    eventData: NonNullable<ClientMessage['data']>['event'],
-    serverData: NonNullable<NonNullable<ClientMessage['data']>['event']>['server'],
-    config: ReturnType<typeof getConfig>
-  ): void {
-    // Validate required fields
-    const host = serverData?.host;
-    const port = serverData?.port;
-    const nick = eventData?.nick;
-
-    if (!host || !port || !nick) {
-      return;
-    }
-
-    // Check if server is in allowed list (if configured)
-    if (config.allowedServers?.length) {
-      const serverAddress = `${host}:${port}`;
-      if (!config.allowedServers.includes(serverAddress)) {
-        this.sendToClient(client.webSocket, 'sic-gateway-event', {
-          type: 'error',
-          message: 'Server not allowed',
-        });
-        return;
+      // Handle multiple lines (some clients might batch)
+      const lines = rawMessage.split(/\r?\n/).filter(line => line.length > 0);
+      for (const line of lines) {
+        client.ircClient.send(line);
       }
     }
-
-    // Destroy existing IRC connection if any
-    if (client.ircClient) {
-      client.ircClient.destroy();
-    }
-
-    // Create new IRC client
-    const ircClient = new IrcClient();
-    client.ircClient = ircClient;
-
-    // Set up IRC event handlers
-    this.setupIrcEventHandlers(client, ircClient);
-
-    // Build WEBIRC configuration if password is set
-    const webircConfig = config.webircPassword
-      ? {
-          password: config.webircPassword,
-          gateway: config.webircGateway ?? 'gateway',
-          hostname: `${client.ipAddress}.web`,
-          ip: client.ipAddress,
-        }
-      : undefined;
-
-    // Connect to IRC server
-    ircClient.connect({
-      host,
-      port,
-      nick,
-      username: eventData?.username,
-      realname: eventData?.realname ?? config.realname,
-      password: eventData?.password,
-      tls: serverData?.tls,
-      encoding: serverData?.encoding,
-      webirc: webircConfig,
-    });
-
-    logger.info(`[${client.id}] Connecting to ${host}:${port} as ${nick}`);
   }
 
   /**
    * Set up event handlers for an IRC client connection
    */
   private setupIrcEventHandlers(client: ConnectedClient, ircClient: IrcClient): void {
-    // Socket connected (TCP/TLS handshake complete)
-    ircClient.on('socket_connected', () => {
-      this.sendToClient(client.webSocket, 'sic-irc-event', {
-        type: 'socket_connected',
-      });
-    });
+    // Raw IRC message from server - forward to client
+    ircClient.on('raw', (line: string, isFromServer: boolean) => {
+      if (isFromServer) {
+        const direction = '>>';
+        logger.debug(`[${client.id}] ${direction} ${line}`);
 
-    // IRC registration complete (received 001)
-    ircClient.on('connected', () => {
-      this.sendToClient(client.webSocket, 'sic-irc-event', {
-        type: 'connected',
-      });
+        // Send raw IRC line to WebSocket client
+        this.sendRawToClient(client.webSocket, line);
+      } else {
+        const direction = '<<';
+        logger.debug(`[${client.id}] ${direction} ${line}`);
+      }
     });
 
     // Connection closed
     ircClient.on('close', () => {
-      this.sendToClient(client.webSocket, 'sic-irc-event', {
-        type: 'close',
-      });
+      // Close WebSocket connection when IRC connection closes
+      client.webSocket.close();
     });
 
     // Connection error
     ircClient.on('error', (error: Error) => {
-      this.sendToClient(client.webSocket, 'sic-irc-event', {
-        type: 'error',
-        error: error.message,
-      });
-    });
-
-    // Raw IRC message (both incoming and outgoing)
-    ircClient.on('raw', (line: string, isFromServer: boolean) => {
-      const direction = isFromServer ? '>>' : '<<';
-      logger.debug(`[${client.id}] ${direction} ${line}`);
-
-      const eventType = isFromServer ? 'sic-irc-event' : 'sic-server-event';
-      this.sendToClient(client.webSocket, eventType, {
-        type: 'raw',
-        line,
-      });
+      logger.warn(`[${client.id}] IRC error: ${error.message}`);
+      // Send error as IRC ERROR message
+      this.sendRawToClient(client.webSocket, `ERROR :${error.message}`);
     });
   }
 
@@ -433,16 +356,11 @@ export class Gateway {
   // ==========================================================================
 
   /**
-   * Send a message to a web client via WebSocket
+   * Send a raw IRC line to a web client via WebSocket
    */
-  private sendToClient(
-    webSocket: WebSocket,
-    event: string,
-    data: Record<string, unknown>
-  ): void {
+  private sendRawToClient(webSocket: WebSocket, line: string): void {
     if (webSocket.readyState === WebSocket.OPEN) {
-      const message = JSON.stringify({ event, data });
-      webSocket.send(message);
+      webSocket.send(line);
     }
   }
 
