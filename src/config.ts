@@ -37,6 +37,9 @@ export interface Config {
   /** List of allowed IRC servers (format: "host:port"). Empty = allow all */
   allowedServers?: string[];
 
+  /** Trust X-Forwarded-For header for client IP (enable only behind a reverse proxy) */
+  trustProxy: boolean;
+
   /** Default quit message when clients disconnect */
   quitMessage: string;
 
@@ -57,6 +60,7 @@ const DEFAULT_CONFIG: Config = {
   path: '/webirc',
   maxClients: 1000,
   maxConnectionsPerIp: 10,
+  trustProxy: false,
   quitMessage: 'Simple IRC Client',
   realname: 'Simple IRC Client user',
 };

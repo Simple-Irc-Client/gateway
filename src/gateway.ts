@@ -123,13 +123,16 @@ export class Gateway {
     );
     const requestPath = requestUrl.pathname;
 
-    // Get client IP address (check X-Forwarded-For for reverse proxy setups)
-    const forwardedFor = request.headers['x-forwarded-for']?.toString();
-    const clientIp = (
-      forwardedFor?.split(',')[0] ??
-      request.socket.remoteAddress ??
-      '127.0.0.1'
-    ).trim();
+    // Get client IP address — only trust X-Forwarded-For when behind a configured proxy
+    const clientIp = (() => {
+      if (config.trustProxy) {
+        const forwardedFor = request.headers['x-forwarded-for']?.toString();
+        if (forwardedFor) {
+          return forwardedFor.split(',')[0].trim();
+        }
+      }
+      return request.socket.remoteAddress ?? '127.0.0.1';
+    })();
 
     // Validate request path
     if (requestPath !== config.path) {

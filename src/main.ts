@@ -57,6 +57,7 @@ function getConfigFromEnvironment(): Partial<Config> {
     webircPassword: process.env.WEBIRC_PASSWORD,
     webircGateway: process.env.WEBIRC_GATEWAY,
     allowedServers: parseAllowedServers(process.env.ALLOWED_SERVERS),
+    trustProxy: process.env.TRUST_PROXY === 'true',
   };
 }
 
