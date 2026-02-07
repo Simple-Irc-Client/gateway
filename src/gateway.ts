@@ -44,6 +44,12 @@ const ALLOWED_ENCODINGS = new Set([
 /**
  * Represents a connected web client with their associated IRC connection
  */
+/** Maximum WebSocket messages allowed per rate limit window */
+const RATE_LIMIT_MAX_MESSAGES = 50;
+
+/** Rate limit window duration in milliseconds (5 seconds) */
+const RATE_LIMIT_WINDOW_MS = 5000;
+
 interface ConnectedClient {
   /** Unique identifier for this client (e.g., "c1", "c2") */
   id: string;
@@ -53,6 +59,10 @@ interface ConnectedClient {
   webSocket: WebSocket;
   /** IRC connection to the server (null if not connected to IRC) */
   ircClient: IrcClient | null;
+  /** Message count in the current rate limit window */
+  messageCount: number;
+  /** Timestamp when the current rate limit window started */
+  rateLimitWindowStart: number;
   /** Server configuration from query parameters */
   serverConfig: {
     host: string;
@@ -210,6 +220,8 @@ export class Gateway {
       ipAddress: clientIp,
       webSocket: webSocket,
       ircClient: null,
+      messageCount: 0,
+      rateLimitWindowStart: Date.now(),
       serverConfig: serverConfig,
     };
 
@@ -327,6 +339,18 @@ export class Gateway {
    * which are forwarded directly to the IRC server.
    */
   private handleClientMessage(client: ConnectedClient, rawMessage: string): void {
+    // Per-connection rate limiting (sliding window)
+    const now = Date.now();
+    if (now - client.rateLimitWindowStart > RATE_LIMIT_WINDOW_MS) {
+      client.messageCount = 0;
+      client.rateLimitWindowStart = now;
+    }
+    client.messageCount++;
+    if (client.messageCount > RATE_LIMIT_MAX_MESSAGES) {
+      logger.warn(`[${client.id}] Rate limit exceeded, dropping message`);
+      return;
+    }
+
     // Forward raw IRC command to IRC server
     if (client.ircClient) {
       // Handle multiple lines (some clients might batch)
