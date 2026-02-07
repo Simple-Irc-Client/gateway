@@ -243,10 +243,11 @@ export class IrcClient extends EventEmitter {
 
     // Send WEBIRC command if configured (must be first)
     if (options.webirc) {
-      this.send(
-        `WEBIRC ${stripCRLF(options.webirc.password)} ${stripCRLF(options.webirc.gateway)} ` +
-        `${stripCRLF(options.webirc.hostname)} ${stripCRLF(options.webirc.ip)}`
-      );
+      if (!options.tls) {
+        this.emit('error', new Error('WEBIRC requires a TLS connection — skipping'));
+      } else {
+        this.sendWebirc(options.webirc);
+      }
     }
 
     // Start keepalive ping timer
@@ -299,10 +300,11 @@ export class IrcClient extends EventEmitter {
 
     // Send WEBIRC command if configured (must be first)
     if (options.webirc) {
-      this.send(
-        `WEBIRC ${stripCRLF(options.webirc.password)} ${stripCRLF(options.webirc.gateway)} ` +
-        `${stripCRLF(options.webirc.hostname)} ${stripCRLF(options.webirc.ip)}`
-      );
+      if (!options.tls) {
+        this.emit('error', new Error('WEBIRC requires a TLS connection — skipping'));
+      } else {
+        this.sendWebirc(options.webirc);
+      }
     }
 
     // Send server password if provided
@@ -409,6 +411,25 @@ export class IrcClient extends EventEmitter {
 
       // Emit raw line for logging (isFromServer = false)
       this.emit('raw', line, false);
+    }
+  }
+
+  /**
+   * Send WEBIRC command with password scrubbed from logs
+   */
+  private sendWebirc(webirc: WebircConfig): void {
+    const password = stripCRLF(webirc.password);
+    const gateway = stripCRLF(webirc.gateway);
+    const hostname = stripCRLF(webirc.hostname);
+    const ip = stripCRLF(webirc.ip);
+
+    if (this.socket?.writable) {
+      const line = `WEBIRC ${password} ${gateway} ${hostname} ${ip}`;
+      const encodedLine = this.encodeString(`${line}${IRC_LINE_ENDING}`);
+      this.socket.write(encodedLine);
+
+      // Emit scrubbed version for logging — never log the password
+      this.emit('raw', `WEBIRC ****** ${gateway} ${hostname} ${ip}`, false);
     }
   }
 
