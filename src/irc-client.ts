@@ -79,7 +79,7 @@ export interface WebircConfig {
 const IRC_LINE_ENDING = '\r\n';
 
 /** Strip CR/LF from user-supplied values to prevent IRC protocol injection */
-const sanitize = (input: string): string => input.replace(/[\r\n]/g, '');
+const stripCRLF = (input: string): string => input.replace(/[\r\n]/g, '');
 
 /** Interval for sending PING keepalive messages (30 seconds) */
 const PING_INTERVAL_MS = 30000;
@@ -227,8 +227,8 @@ export class IrcClient extends EventEmitter {
     // Send WEBIRC command if configured (must be first)
     if (options.webirc) {
       this.send(
-        `WEBIRC ${sanitize(options.webirc.password)} ${sanitize(options.webirc.gateway)} ` +
-        `${sanitize(options.webirc.hostname)} ${sanitize(options.webirc.ip)}`
+        `WEBIRC ${stripCRLF(options.webirc.password)} ${stripCRLF(options.webirc.gateway)} ` +
+        `${stripCRLF(options.webirc.hostname)} ${stripCRLF(options.webirc.ip)}`
       );
     }
 
@@ -268,25 +268,25 @@ export class IrcClient extends EventEmitter {
     // Send WEBIRC command if configured (must be first)
     if (options.webirc) {
       this.send(
-        `WEBIRC ${sanitize(options.webirc.password)} ${sanitize(options.webirc.gateway)} ` +
-        `${sanitize(options.webirc.hostname)} ${sanitize(options.webirc.ip)}`
+        `WEBIRC ${stripCRLF(options.webirc.password)} ${stripCRLF(options.webirc.gateway)} ` +
+        `${stripCRLF(options.webirc.hostname)} ${stripCRLF(options.webirc.ip)}`
       );
     }
 
     // Send server password if provided
     if (options.password) {
-      this.send(`PASS ${sanitize(options.password)}`);
+      this.send(`PASS ${stripCRLF(options.password)}`);
     }
 
     // Request IRCv3 capability negotiation
     this.send('CAP LS 302');
 
     // Send nickname
-    this.send(`NICK ${sanitize(options.nick)}`);
+    this.send(`NICK ${stripCRLF(options.nick)}`);
 
     // Send user information
-    const username = sanitize(options.username ?? options.nick);
-    const realname = sanitize(options.realname ?? options.nick);
+    const username = stripCRLF(options.username ?? options.nick);
+    const realname = stripCRLF(options.realname ?? options.nick);
     this.send(`USER ${username} 0 * :${realname}`);
 
     // Start keepalive ping timer
