@@ -92,6 +92,9 @@ const CONNECTION_TIMEOUT_MS = 30000;
 /** Timeout for receiving server response after sending PING (60 seconds) */
 const PONG_TIMEOUT_MS = 60000;
 
+/** Maximum receive buffer size before dropping the connection (64KB) */
+const MAX_RECEIVE_BUFFER_SIZE = 64 * 1024;
+
 /**
  * Pattern to match RPL_WELCOME (001) from a server
  *
@@ -344,6 +347,13 @@ export class IrcClient extends EventEmitter {
   private handleIncomingData(data: Buffer): void {
     // Append new data to buffer
     this.receiveBuffer = Buffer.concat([this.receiveBuffer, data]);
+
+    // Guard against unbounded buffer growth (e.g. malicious server sending
+    // data without line terminators)
+    if (this.receiveBuffer.length > MAX_RECEIVE_BUFFER_SIZE) {
+      this.socket?.destroy(new Error('Receive buffer overflow'));
+      return;
+    }
 
     // Process complete lines
     let lineEndIndex: number;
