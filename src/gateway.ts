@@ -150,6 +150,15 @@ export class Gateway {
       return;
     }
 
+    // Validate Origin header against allowlist (if configured)
+    if (config.allowedOrigins?.length) {
+      const origin = request.headers.origin;
+      if (!origin || !config.allowedOrigins.includes(origin)) {
+        this.rejectConnection(socket, 403, 'Forbidden - Origin not allowed');
+        return;
+      }
+    }
+
     // Parse server configuration from query parameters
     const host = requestUrl.searchParams.get('host');
     const portStr = requestUrl.searchParams.get('port');

@@ -40,6 +40,9 @@ export interface Config {
   /** Trust X-Forwarded-For header for client IP (enable only behind a reverse proxy) */
   trustProxy: boolean;
 
+  /** Allowed WebSocket Origin values (e.g. "https://example.com"). Empty = allow all */
+  allowedOrigins?: string[];
+
   /** Default quit message when clients disconnect */
   quitMessage: string;
 
@@ -61,6 +64,7 @@ const DEFAULT_CONFIG: Config = {
   maxClients: 1000,
   maxConnectionsPerIp: 10,
   trustProxy: false,
+  allowedOrigins: ['https://simpleircclient.com'],
   quitMessage: 'Simple IRC Client',
   realname: 'Simple IRC Client user',
 };
