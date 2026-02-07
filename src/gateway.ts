@@ -26,6 +26,16 @@ import { getConfig } from './config.js';
 import { IrcClient } from './irc-client.js';
 import * as logger from './logger.js';
 
+const ALLOWED_ENCODINGS = new Set([
+  'utf8', 'utf-8', 'ascii', 'latin1', 'iso-8859-1', 'iso-8859-2', 'iso-8859-3',
+  'iso-8859-4', 'iso-8859-5', 'iso-8859-6', 'iso-8859-7', 'iso-8859-8',
+  'iso-8859-9', 'iso-8859-10', 'iso-8859-13', 'iso-8859-14', 'iso-8859-15',
+  'iso-8859-16', 'windows-1250', 'windows-1251', 'windows-1252', 'windows-1253',
+  'windows-1254', 'windows-1255', 'windows-1256', 'windows-1257', 'windows-1258',
+  'koi8-r', 'koi8-u', 'shift_jis', 'euc-jp', 'euc-kr', 'gb2312', 'gbk', 'gb18030',
+  'big5', 'tis-620',
+]);
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -130,7 +140,8 @@ export class Gateway {
     const portStr = requestUrl.searchParams.get('port');
     const port = portStr ? parseInt(portStr, 10) : null;
     const tls = requestUrl.searchParams.get('tls') === 'true';
-    const encoding = requestUrl.searchParams.get('encoding') ?? 'utf8';
+    const encodingParam = requestUrl.searchParams.get('encoding') ?? 'utf8';
+    const encoding = ALLOWED_ENCODINGS.has(encodingParam.toLowerCase()) ? encodingParam : 'utf8';
 
     // Validate required parameters
     if (!host || !port || isNaN(port)) {
