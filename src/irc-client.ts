@@ -84,6 +84,12 @@ const stripCRLF = (input: string): string => input.replace(/[\r\n]/g, '');
 /** Interval for sending PING keepalive messages (30 seconds) */
 const PING_INTERVAL_MS = 30000;
 
+/** Timeout for TCP/TLS connection establishment (30 seconds) */
+const CONNECTION_TIMEOUT_MS = 30000;
+
+/** Timeout for receiving server response after sending PING (60 seconds) */
+const PONG_TIMEOUT_MS = 60000;
+
 /**
  * Pattern to match RPL_WELCOME (001) from a server
  *
@@ -129,6 +135,9 @@ export class IrcClient extends EventEmitter {
 
   /** Timer for periodic PING keepalive */
   private pingIntervalTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** Timer that fires if server doesn't respond after PING */
+  private pongTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
 
   // ==========================================================================
   // Connection Management
@@ -222,6 +231,9 @@ export class IrcClient extends EventEmitter {
    * Only sends WEBIRC if configured, then lets client handle registration
    */
   private handleRawSocketConnected(options: IrcRawConnectionOptions): void {
+    // Handshake succeeded — disable the connection establishment timeout
+    this.socket?.setTimeout(0);
+
     this.emit('socket_connected');
 
     // Send WEBIRC command if configured (must be first)
@@ -245,16 +257,27 @@ export class IrcClient extends EventEmitter {
       port: options.port,
     };
 
+    let socket: net.Socket | tls.TLSSocket;
+
     if (options.tls) {
       // TLS connection - disable certificate validation for self-signed certs
-      return tls.connect({
+      socket = tls.connect({
         ...connectionConfig,
         rejectUnauthorized: false,
       });
     } else {
       // Plain TCP connection
-      return net.connect(connectionConfig);
+      socket = net.connect(connectionConfig);
     }
+
+    // Connection establishment timeout — destroy socket if handshake
+    // doesn't complete within the allowed time
+    socket.setTimeout(CONNECTION_TIMEOUT_MS);
+    socket.once('timeout', () => {
+      socket.destroy(new Error('Connection timed out'));
+    });
+
+    return socket;
   }
 
   /**
@@ -263,6 +286,9 @@ export class IrcClient extends EventEmitter {
    * Performs IRC registration sequence
    */
   private handleSocketConnected(options: IrcConnectionOptions): void {
+    // Handshake succeeded — disable the connection establishment timeout
+    this.socket?.setTimeout(0);
+
     this.emit('socket_connected');
 
     // Send WEBIRC command if configured (must be first)
@@ -337,6 +363,9 @@ export class IrcClient extends EventEmitter {
    * Handle a complete IRC line
    */
   private handleIrcLine(line: string): void {
+    // Any data from server proves it's alive — clear the PONG timeout
+    this.clearPongTimeout();
+
     // Emit raw line for logging and forwarding to client
     this.emit('raw', line, true);
 
@@ -414,17 +443,35 @@ export class IrcClient extends EventEmitter {
     this.pingIntervalTimer = setInterval(() => {
       // Use timestamp as PING data for debugging
       this.send(`PING :${Date.now()}`);
+
+      // Start a PONG timeout — if the server doesn't send anything
+      // before this fires, consider the connection dead
+      this.clearPongTimeout();
+      this.pongTimeoutTimer = setTimeout(() => {
+        this.socket?.destroy(new Error('PONG timeout: server unresponsive'));
+      }, PONG_TIMEOUT_MS);
     }, PING_INTERVAL_MS);
   }
 
   /**
-   * Stop the PING keepalive timer
+   * Clear the PONG response timeout (called when server sends any data)
+   */
+  private clearPongTimeout(): void {
+    if (this.pongTimeoutTimer) {
+      clearTimeout(this.pongTimeoutTimer);
+      this.pongTimeoutTimer = null;
+    }
+  }
+
+  /**
+   * Stop the PING keepalive timer and PONG timeout
    */
   private stopPingTimer(): void {
     if (this.pingIntervalTimer) {
       clearInterval(this.pingIntervalTimer);
       this.pingIntervalTimer = null;
     }
+    this.clearPongTimeout();
   }
 
   // ==========================================================================
