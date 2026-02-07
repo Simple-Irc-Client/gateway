@@ -144,8 +144,8 @@ export class Gateway {
     const encoding = ALLOWED_ENCODINGS.has(encodingParam.toLowerCase()) ? encodingParam : 'utf8';
 
     // Validate required parameters
-    if (!host || !port || isNaN(port)) {
-      this.rejectConnection(socket, 400, 'Bad Request - Missing host or port');
+    if (!host || !port || isNaN(port) || port < 1 || port > 65535) {
+      this.rejectConnection(socket, 400, 'Bad Request - Missing or invalid host/port');
       return;
     }
 
