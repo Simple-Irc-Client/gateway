@@ -402,6 +402,84 @@ describe('Gateway', () => {
       ).resolves.toBeUndefined();
     });
 
+    it('blocks IPv4-mapped IPv6 addresses (::ffff:127.0.0.1)', async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      const ws = new WebSocket(createWsUrl('::ffff:127.0.0.1', 6667));
+
+      await expect(
+        new Promise<void>((resolve, reject) => {
+          ws.on('open', () => reject(new Error('should not connect')));
+          ws.on('error', () => resolve());
+          setTimeout(() => reject(new Error('timeout')), 1000);
+        })
+      ).resolves.toBeUndefined();
+    });
+
+    it('blocks IPv4-mapped IPv6 private addresses (::ffff:10.0.0.1)', async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      const ws = new WebSocket(createWsUrl('::ffff:10.0.0.1', 6667));
+
+      await expect(
+        new Promise<void>((resolve, reject) => {
+          ws.on('open', () => reject(new Error('should not connect')));
+          ws.on('error', () => resolve());
+          setTimeout(() => reject(new Error('timeout')), 1000);
+        })
+      ).resolves.toBeUndefined();
+    });
+
+    it('blocks IPv4-mapped IPv6 with brackets ([::ffff:192.168.1.1])', async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      const ws = new WebSocket(createWsUrl('[::ffff:192.168.1.1]', 6667));
+
+      await expect(
+        new Promise<void>((resolve, reject) => {
+          ws.on('open', () => reject(new Error('should not connect')));
+          ws.on('error', () => resolve());
+          setTimeout(() => reject(new Error('timeout')), 1000);
+        })
+      ).resolves.toBeUndefined();
+    });
+
+    it('blocks IPv4-compatible IPv6 addresses (::127.0.0.1)', async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      const ws = new WebSocket(createWsUrl('::127.0.0.1', 6667));
+
+      await expect(
+        new Promise<void>((resolve, reject) => {
+          ws.on('open', () => reject(new Error('should not connect')));
+          ws.on('error', () => resolve());
+          setTimeout(() => reject(new Error('timeout')), 1000);
+        })
+      ).resolves.toBeUndefined();
+    });
+
+    it('blocks Teredo addresses (2001:0000:...)', async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      const ws = new WebSocket(createWsUrl('2001:0000:1234:5678:9abc:def0:1234:5678', 6667));
+
+      await expect(
+        new Promise<void>((resolve, reject) => {
+          ws.on('open', () => reject(new Error('should not connect')));
+          ws.on('error', () => resolve());
+          setTimeout(() => reject(new Error('timeout')), 1000);
+        })
+      ).resolves.toBeUndefined();
+    });
+
+    it('blocks [::1] IPv6 loopback', async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      const ws = new WebSocket(createWsUrl('[::1]', 6667));
+
+      await expect(
+        new Promise<void>((resolve, reject) => {
+          ws.on('open', () => reject(new Error('should not connect')));
+          ws.on('error', () => resolve());
+          setTimeout(() => reject(new Error('timeout')), 1000);
+        })
+      ).resolves.toBeUndefined();
+    });
+
     it('allows connections to public hostnames', async () => {
       await new Promise((r) => setTimeout(r, 50));
       const ws = new WebSocket(createWsUrl('irc.libera.chat', 6667));

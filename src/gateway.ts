@@ -44,8 +44,19 @@ function isPrivateHost(host: string): boolean {
   }
 
   // IPv6 literals (with or without brackets)
-  const ipv6 = lower.startsWith('[') ? lower.slice(1, -1) : lower;
+  const ipv6 = (lower.startsWith('[') && lower.endsWith(']')) ? lower.slice(1, -1) : lower;
   if (ipv6 === '::1' || ipv6 === '::' || ipv6.startsWith('fc') || ipv6.startsWith('fd') || ipv6.startsWith('fe80')) {
+    return true;
+  }
+
+  // IPv4-mapped/compatible IPv6 (e.g. ::ffff:127.0.0.1, ::ffff:10.0.0.1, ::127.0.0.1)
+  const v4MappedMatch = ipv6.match(/^::(?:ffff:)?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (v4MappedMatch) {
+    return isPrivateHost(v4MappedMatch[1]);
+  }
+
+  // Teredo addresses (2001:0000:...) can encapsulate arbitrary IPv4
+  if (ipv6.startsWith('2001:0') || ipv6.startsWith('2001::')) {
     return true;
   }
 
