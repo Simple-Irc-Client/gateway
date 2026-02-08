@@ -27,6 +27,48 @@ import { getConfig } from './config.js';
 import { IrcClient } from './irc-client.js';
 import * as logger from './logger.js';
 
+// ============================================================================
+// SSRF Protection — block connections to private/reserved IP ranges
+// ============================================================================
+
+/**
+ * Check if a hostname is a private/reserved address that should not be
+ * reachable from the public gateway (SSRF protection).
+ */
+function isPrivateHost(host: string): boolean {
+  const lower = host.toLowerCase();
+
+  // Block well-known private hostnames
+  if (lower === 'localhost' || lower.endsWith('.local') || lower === '[::1]') {
+    return true;
+  }
+
+  // IPv6 literals (with or without brackets)
+  const ipv6 = lower.startsWith('[') ? lower.slice(1, -1) : lower;
+  if (ipv6 === '::1' || ipv6 === '::' || ipv6.startsWith('fc') || ipv6.startsWith('fd') || ipv6.startsWith('fe80')) {
+    return true;
+  }
+
+  // IPv4 check
+  const parts = host.split('.');
+  if (parts.length === 4 && parts.every((p) => /^\d{1,3}$/.test(p))) {
+    const octets = parts.map(Number);
+    const [a, b] = octets;
+    if (
+      a === 127 ||                         // 127.0.0.0/8 loopback
+      a === 10 ||                           // 10.0.0.0/8 private
+      (a === 172 && b >= 16 && b <= 31) ||  // 172.16.0.0/12 private
+      (a === 192 && b === 168) ||           // 192.168.0.0/16 private
+      (a === 169 && b === 254) ||           // 169.254.0.0/16 link-local
+      a === 0                               // 0.0.0.0/8 current network
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 const ALLOWED_ENCODINGS = new Set([
   'utf8', 'utf-8', 'ascii', 'latin1', 'iso-8859-1', 'iso-8859-2', 'iso-8859-3',
   'iso-8859-4', 'iso-8859-5', 'iso-8859-6', 'iso-8859-7', 'iso-8859-8',
@@ -171,6 +213,12 @@ export class Gateway {
     // Validate required parameters
     if (!host || !port || isNaN(port) || port < 1 || port > 65535) {
       this.rejectConnection(socket, 400, 'Bad Request - Missing or invalid host/port');
+      return;
+    }
+
+    // SSRF protection: block private/reserved IP ranges
+    if (config.blockPrivateHosts && isPrivateHost(host)) {
+      this.rejectConnection(socket, 403, 'Forbidden - Private hosts not allowed');
       return;
     }
 

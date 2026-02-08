@@ -19,7 +19,7 @@ describe('Gateway', () => {
   };
 
   beforeEach(() => {
-    loadConfig({ port: TEST_PORT, host: '127.0.0.1', path: '/webirc', allowedOrigins: [] });
+    loadConfig({ port: TEST_PORT, host: '127.0.0.1', path: '/webirc', allowedOrigins: [], blockPrivateHosts: false });
     gateway = new Gateway();
     gateway.start();
   });
@@ -78,7 +78,7 @@ describe('Gateway', () => {
   });
 
   it('enforces max connections per IP', async () => {
-    loadConfig({ port: TEST_PORT, host: '127.0.0.1', path: '/webirc', maxConnectionsPerIp: 2, allowedOrigins: [] });
+    loadConfig({ port: TEST_PORT, host: '127.0.0.1', path: '/webirc', maxConnectionsPerIp: 2, allowedOrigins: [], blockPrivateHosts: false });
     gateway.stop();
     gateway = new Gateway();
     gateway.start();
@@ -134,6 +134,7 @@ describe('Gateway', () => {
       path: '/webirc',
       allowedServers: ['irc.allowed.com:6667'],
       allowedOrigins: [],
+      blockPrivateHosts: false,
     });
     gateway.stop();
     gateway = new Gateway();
@@ -160,6 +161,7 @@ describe('Gateway', () => {
       path: '/webirc',
       allowedServers: ['irc.allowed.com:6667'],
       allowedOrigins: [],
+      blockPrivateHosts: false,
     });
     gateway.stop();
     gateway = new Gateway();
@@ -302,6 +304,133 @@ describe('Gateway', () => {
       const ws = new WebSocket(createWsUrl(), {
         origin: 'https://dev.simpleircclient.com',
       });
+
+      await new Promise<void>((resolve, reject) => {
+        ws.on('open', () => resolve());
+        ws.on('error', reject);
+        setTimeout(() => reject(new Error('timeout')), 1000);
+      });
+
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.close();
+    });
+  });
+
+  describe('SSRF protection', () => {
+    beforeEach(() => {
+      loadConfig({ port: TEST_PORT, host: '127.0.0.1', path: '/webirc', allowedOrigins: [], blockPrivateHosts: true });
+      gateway.stop();
+      gateway = new Gateway();
+      gateway.start();
+    });
+
+    it('blocks connections to localhost', async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      const ws = new WebSocket(createWsUrl('localhost', 6667));
+
+      await expect(
+        new Promise<void>((resolve, reject) => {
+          ws.on('open', () => reject(new Error('should not connect')));
+          ws.on('error', () => resolve());
+          setTimeout(() => reject(new Error('timeout')), 1000);
+        })
+      ).resolves.toBeUndefined();
+    });
+
+    it('blocks connections to 127.0.0.1', async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      const ws = new WebSocket(createWsUrl('127.0.0.1', 6667));
+
+      await expect(
+        new Promise<void>((resolve, reject) => {
+          ws.on('open', () => reject(new Error('should not connect')));
+          ws.on('error', () => resolve());
+          setTimeout(() => reject(new Error('timeout')), 1000);
+        })
+      ).resolves.toBeUndefined();
+    });
+
+    it('blocks connections to 10.x.x.x', async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      const ws = new WebSocket(createWsUrl('10.0.0.1', 6667));
+
+      await expect(
+        new Promise<void>((resolve, reject) => {
+          ws.on('open', () => reject(new Error('should not connect')));
+          ws.on('error', () => resolve());
+          setTimeout(() => reject(new Error('timeout')), 1000);
+        })
+      ).resolves.toBeUndefined();
+    });
+
+    it('blocks connections to 192.168.x.x', async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      const ws = new WebSocket(createWsUrl('192.168.1.1', 6667));
+
+      await expect(
+        new Promise<void>((resolve, reject) => {
+          ws.on('open', () => reject(new Error('should not connect')));
+          ws.on('error', () => resolve());
+          setTimeout(() => reject(new Error('timeout')), 1000);
+        })
+      ).resolves.toBeUndefined();
+    });
+
+    it('blocks connections to 172.16.x.x', async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      const ws = new WebSocket(createWsUrl('172.16.0.1', 6667));
+
+      await expect(
+        new Promise<void>((resolve, reject) => {
+          ws.on('open', () => reject(new Error('should not connect')));
+          ws.on('error', () => resolve());
+          setTimeout(() => reject(new Error('timeout')), 1000);
+        })
+      ).resolves.toBeUndefined();
+    });
+
+    it('blocks connections to 0.0.0.0', async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      const ws = new WebSocket(createWsUrl('0.0.0.0', 6667));
+
+      await expect(
+        new Promise<void>((resolve, reject) => {
+          ws.on('open', () => reject(new Error('should not connect')));
+          ws.on('error', () => resolve());
+          setTimeout(() => reject(new Error('timeout')), 1000);
+        })
+      ).resolves.toBeUndefined();
+    });
+
+    it('allows connections to public hostnames', async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      const ws = new WebSocket(createWsUrl('irc.libera.chat', 6667));
+
+      await new Promise<void>((resolve, reject) => {
+        ws.on('open', () => resolve());
+        ws.on('error', reject);
+        setTimeout(() => reject(new Error('timeout')), 1000);
+      });
+
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.close();
+    });
+
+    it('allows private hosts when blockPrivateHosts is false', async () => {
+      loadConfig({
+        port: TEST_PORT,
+        host: '127.0.0.1',
+        path: '/webirc',
+        allowedOrigins: [],
+        blockPrivateHosts: false,
+      });
+      gateway.stop();
+      gateway = new Gateway();
+      gateway.start();
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const ws = new WebSocket(createWsUrl('127.0.0.1', 6667));
 
       await new Promise<void>((resolve, reject) => {
         ws.on('open', () => resolve());

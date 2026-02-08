@@ -43,6 +43,9 @@ export interface Config {
   /** Allowed WebSocket Origin values (e.g. "https://example.com"). Empty = allow all */
   allowedOrigins?: string[];
 
+  /** Block connections to private/reserved IP ranges (SSRF protection, default: true) */
+  blockPrivateHosts: boolean;
+
   /** Default quit message when clients disconnect */
   quitMessage: string;
 
@@ -65,6 +68,7 @@ const DEFAULT_CONFIG: Config = {
   maxConnectionsPerIp: 10,
   trustProxy: false,
   allowedOrigins: ['https://simpleircclient.com'],
+  blockPrivateHosts: true,
   quitMessage: 'Simple IRC Client',
   realname: 'Simple IRC Client user',
 };
