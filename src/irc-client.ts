@@ -244,7 +244,9 @@ export class IrcClient extends EventEmitter {
     // Send WEBIRC command if configured (must be first)
     if (options.webirc) {
       if (!options.tls) {
-        this.emit('error', new Error('WEBIRC requires a TLS connection — skipping'));
+        this.emit('error', new Error('Connection rejected — TLS required'));
+        this.socket?.destroy();
+        return;
       } else {
         this.sendWebirc(options.webirc);
       }
@@ -301,7 +303,9 @@ export class IrcClient extends EventEmitter {
     // Send WEBIRC command if configured (must be first)
     if (options.webirc) {
       if (!options.tls) {
-        this.emit('error', new Error('WEBIRC requires a TLS connection — skipping'));
+        this.emit('error', new Error('Connection rejected — TLS required'));
+        this.socket?.destroy();
+        return;
       } else {
         this.sendWebirc(options.webirc);
       }
