@@ -92,8 +92,8 @@ const CONNECTION_TIMEOUT_MS = 30000;
 /** Timeout for receiving server response after sending PING (60 seconds) */
 const PONG_TIMEOUT_MS = 60000;
 
-/** Maximum receive buffer size before dropping the connection (64KB) */
-const MAX_RECEIVE_BUFFER_SIZE = 64 * 1024;
+/** Maximum receive buffer size before dropping the connection (128KB) */
+const MAX_RECEIVE_BUFFER_SIZE = 128 * 1024;
 
 /**
  * Pattern to match RPL_WELCOME (001) from a server
