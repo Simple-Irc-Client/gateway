@@ -63,7 +63,10 @@ describe('IrcClient', () => {
     expect(allData).toContain('PASS secret');
   });
 
-  it('sends WEBIRC when configured', async () => {
+  it('skips WEBIRC and emits error on non-TLS connection', async () => {
+    const onError = vi.fn();
+    client.on('error', onError);
+
     client.connect({
       host: '127.0.0.1',
       port: serverPort,
@@ -74,7 +77,12 @@ describe('IrcClient', () => {
     await new Promise((r) => setTimeout(r, 50));
     const allData = receivedData.join('');
 
-    expect(allData).toContain('WEBIRC webircpass mygateway 1.2.3.4.web 1.2.3.4');
+    // WEBIRC should NOT be sent over non-TLS
+    expect(allData).not.toContain('WEBIRC');
+    // Error should be emitted
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('TLS') })
+    );
   });
 
   it('emits raw events for outgoing lines', async () => {
@@ -230,6 +238,48 @@ describe('IrcClient line parsing', () => {
     await new Promise((r) => setTimeout(r, 50));
 
     expect(onConnected).not.toHaveBeenCalled();
+  });
+
+  it('destroys connection when receive buffer exceeds 64KB', async () => {
+    const onClose = vi.fn();
+    const onError = vi.fn();
+    client.on('close', onClose);
+    client.on('error', onError);
+
+    client.connect({ host: '127.0.0.1', port: serverPort, nick: 'testnick' });
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Send 65KB of data without line terminators to overflow the buffer
+    const bigData = Buffer.alloc(65 * 1024, 0x41);
+    serverSocket?.write(bigData);
+
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('handles data within buffer limits without disconnecting', async () => {
+    const onRaw = vi.fn();
+    const onClose = vi.fn();
+    client.on('raw', onRaw);
+    client.on('close', onClose);
+
+    client.connect({ host: '127.0.0.1', port: serverPort, nick: 'testnick' });
+    await new Promise((r) => setTimeout(r, 50));
+
+    onRaw.mockClear();
+
+    // Send data within limits with proper line terminator
+    const message = ':server NOTICE * :' + 'A'.repeat(500) + '\r\n';
+    serverSocket?.write(message);
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(onRaw).toHaveBeenCalledWith(
+      expect.stringContaining('NOTICE'),
+      true
+    );
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it('handles partial lines correctly', async () => {

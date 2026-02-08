@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Gateway } from '../gateway.js';
 import { loadConfig } from '../config.js';
 import WebSocket from 'ws';
+import { createServer as createTcpServer, type Server as TcpServer } from 'net';
 
 describe('Gateway', () => {
   let gateway: Gateway;
@@ -18,7 +19,7 @@ describe('Gateway', () => {
   };
 
   beforeEach(() => {
-    loadConfig({ port: TEST_PORT, host: '127.0.0.1', path: '/webirc' });
+    loadConfig({ port: TEST_PORT, host: '127.0.0.1', path: '/webirc', allowedOrigins: [] });
     gateway = new Gateway();
     gateway.start();
   });
@@ -77,7 +78,7 @@ describe('Gateway', () => {
   });
 
   it('enforces max connections per IP', async () => {
-    loadConfig({ port: TEST_PORT, host: '127.0.0.1', path: '/webirc', maxConnectionsPerIp: 2 });
+    loadConfig({ port: TEST_PORT, host: '127.0.0.1', path: '/webirc', maxConnectionsPerIp: 2, allowedOrigins: [] });
     gateway.stop();
     gateway = new Gateway();
     gateway.start();
@@ -132,6 +133,7 @@ describe('Gateway', () => {
       host: '127.0.0.1',
       path: '/webirc',
       allowedServers: ['irc.allowed.com:6667'],
+      allowedOrigins: [],
     });
     gateway.stop();
     gateway = new Gateway();
@@ -157,6 +159,7 @@ describe('Gateway', () => {
       host: '127.0.0.1',
       path: '/webirc',
       allowedServers: ['irc.allowed.com:6667'],
+      allowedOrigins: [],
     });
     gateway.stop();
     gateway = new Gateway();
@@ -175,6 +178,209 @@ describe('Gateway', () => {
 
     expect(ws.readyState).toBe(WebSocket.OPEN);
     ws.close();
+  });
+
+  describe('Origin validation', () => {
+    it('rejects connections with disallowed origin', async () => {
+      loadConfig({
+        port: TEST_PORT,
+        host: '127.0.0.1',
+        path: '/webirc',
+        allowedOrigins: ['https://simpleircclient.com'],
+      });
+      gateway.stop();
+      gateway = new Gateway();
+      gateway.start();
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const ws = new WebSocket(createWsUrl(), {
+        origin: 'https://evil.com',
+      });
+
+      await expect(
+        new Promise<void>((resolve, reject) => {
+          ws.on('open', () => reject(new Error('should not connect')));
+          ws.on('error', () => resolve());
+          setTimeout(() => reject(new Error('timeout')), 1000);
+        })
+      ).resolves.toBeUndefined();
+    });
+
+    it('rejects connections with no origin when allowedOrigins is set', async () => {
+      loadConfig({
+        port: TEST_PORT,
+        host: '127.0.0.1',
+        path: '/webirc',
+        allowedOrigins: ['https://simpleircclient.com'],
+      });
+      gateway.stop();
+      gateway = new Gateway();
+      gateway.start();
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      // ws library doesn't send Origin by default
+      const ws = new WebSocket(createWsUrl());
+
+      await expect(
+        new Promise<void>((resolve, reject) => {
+          ws.on('open', () => reject(new Error('should not connect')));
+          ws.on('error', () => resolve());
+          setTimeout(() => reject(new Error('timeout')), 1000);
+        })
+      ).resolves.toBeUndefined();
+    });
+
+    it('allows connections with matching origin', async () => {
+      loadConfig({
+        port: TEST_PORT,
+        host: '127.0.0.1',
+        path: '/webirc',
+        allowedOrigins: ['https://simpleircclient.com'],
+      });
+      gateway.stop();
+      gateway = new Gateway();
+      gateway.start();
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const ws = new WebSocket(createWsUrl(), {
+        origin: 'https://simpleircclient.com',
+      });
+
+      await new Promise<void>((resolve, reject) => {
+        ws.on('open', () => resolve());
+        ws.on('error', reject);
+        setTimeout(() => reject(new Error('timeout')), 1000);
+      });
+
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.close();
+    });
+
+    it('allows all origins when allowedOrigins is empty', async () => {
+      loadConfig({
+        port: TEST_PORT,
+        host: '127.0.0.1',
+        path: '/webirc',
+        allowedOrigins: [],
+      });
+      gateway.stop();
+      gateway = new Gateway();
+      gateway.start();
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const ws = new WebSocket(createWsUrl(), {
+        origin: 'https://anything.com',
+      });
+
+      await new Promise<void>((resolve, reject) => {
+        ws.on('open', () => resolve());
+        ws.on('error', reject);
+        setTimeout(() => reject(new Error('timeout')), 1000);
+      });
+
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.close();
+    });
+
+    it('allows connections from any of multiple allowed origins', async () => {
+      loadConfig({
+        port: TEST_PORT,
+        host: '127.0.0.1',
+        path: '/webirc',
+        allowedOrigins: ['https://simpleircclient.com', 'https://dev.simpleircclient.com'],
+      });
+      gateway.stop();
+      gateway = new Gateway();
+      gateway.start();
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const ws = new WebSocket(createWsUrl(), {
+        origin: 'https://dev.simpleircclient.com',
+      });
+
+      await new Promise<void>((resolve, reject) => {
+        ws.on('open', () => resolve());
+        ws.on('error', reject);
+        setTimeout(() => reject(new Error('timeout')), 1000);
+      });
+
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.close();
+    });
+  });
+
+  describe('Rate limiting', () => {
+    let ircServer: TcpServer;
+    let ircServerPort: number;
+    let receivedLines: string[];
+
+    beforeEach(async () => {
+      receivedLines = [];
+      ircServer = createTcpServer((socket) => {
+        socket.on('data', (data) => {
+          const lines = data.toString().split('\r\n').filter(Boolean);
+          receivedLines.push(...lines);
+        });
+      });
+
+      await new Promise<void>((resolve) => {
+        ircServer.listen(0, '127.0.0.1', () => {
+          ircServerPort = (ircServer.address() as { port: number }).port;
+          resolve();
+        });
+      });
+    });
+
+    afterEach(async () => {
+      await new Promise<void>((resolve) => ircServer.close(() => resolve()));
+    });
+
+    it('forwards messages within the rate limit', async () => {
+      const ws = new WebSocket(createWsUrl('127.0.0.1', ircServerPort));
+      await new Promise<void>((resolve) => ws.on('open', resolve));
+
+      // Wait for IRC connection to establish
+      await new Promise((r) => setTimeout(r, 100));
+      receivedLines = [];
+
+      // Send exactly 50 messages (at the limit)
+      for (let i = 0; i < 50; i++) {
+        ws.send(`PRIVMSG #test :message ${i}`);
+      }
+
+      await new Promise((r) => setTimeout(r, 300));
+
+      const privmsgs = receivedLines.filter((line) => line.startsWith('PRIVMSG'));
+      expect(privmsgs.length).toBe(50);
+
+      ws.close();
+    });
+
+    it('drops messages exceeding rate limit of 50 per window', async () => {
+      const ws = new WebSocket(createWsUrl('127.0.0.1', ircServerPort));
+      await new Promise<void>((resolve) => ws.on('open', resolve));
+
+      // Wait for IRC connection to establish
+      await new Promise((r) => setTimeout(r, 100));
+      receivedLines = [];
+
+      // Send 60 messages rapidly (limit is 50 per 5s window)
+      for (let i = 0; i < 60; i++) {
+        ws.send(`PRIVMSG #test :message ${i}`);
+      }
+
+      await new Promise((r) => setTimeout(r, 300));
+
+      const privmsgs = receivedLines.filter((line) => line.startsWith('PRIVMSG'));
+      expect(privmsgs.length).toBe(50);
+
+      ws.close();
+    });
   });
 
   it('handles multiple lines in single message', async () => {
