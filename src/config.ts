@@ -51,6 +51,9 @@ export interface Config {
 
   /** Default realname for IRC connections */
   realname: string;
+
+  /** Enforce TLS for all IRC server connections (default: false for backward compatibility) */
+  enforceTls: boolean;
 }
 
 // ============================================================================
@@ -71,6 +74,7 @@ const DEFAULT_CONFIG: Config = {
   blockPrivateHosts: true,
   quitMessage: 'Simple IRC Client',
   realname: 'Simple IRC Client user',
+  enforceTls: false,
 };
 
 // ============================================================================

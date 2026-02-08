@@ -606,4 +606,111 @@ describe('Gateway', () => {
     // We just verify that the gateway processed the batched message
     expect(true).toBe(true);
   });
+
+  describe('TLS enforcement', () => {
+    it('allows connections without TLS when enforceTls is false', async () => {
+      loadConfig({ 
+        port: TEST_PORT, 
+        host: '127.0.0.1', 
+        path: '/webirc', 
+        allowedOrigins: [], 
+        blockPrivateHosts: false,
+        enforceTls: false
+      });
+      gateway.stop();
+      gateway = new Gateway();
+      gateway.start();
+
+      const ws = new WebSocket(createWsUrl('irc.example.com', 6667, false));
+
+      await new Promise<void>((resolve, reject) => {
+        ws.on('open', () => resolve());
+        ws.on('error', reject);
+        setTimeout(() => reject(new Error('timeout')), 1000);
+      });
+
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.close();
+    });
+
+    it('rejects connections without TLS when enforceTls is true', async () => {
+      loadConfig({ 
+        port: TEST_PORT, 
+        host: '127.0.0.1', 
+        path: '/webirc', 
+        allowedOrigins: [], 
+        blockPrivateHosts: false,
+        enforceTls: true
+      });
+      gateway.stop();
+      gateway = new Gateway();
+      gateway.start();
+
+      const ws = new WebSocket(createWsUrl('irc.example.com', 6667, false));
+
+      await new Promise<void>((resolve, reject) => {
+        ws.on('open', () => reject(new Error('should not connect')));
+        ws.on('error', () => resolve());
+        setTimeout(() => reject(new Error('timeout')), 1000);
+      });
+
+      expect(ws.readyState).not.toBe(WebSocket.OPEN);
+    });
+
+    it('allows connections with TLS when enforceTls is true', async () => {
+      loadConfig({ 
+        port: TEST_PORT, 
+        host: '127.0.0.1', 
+        path: '/webirc', 
+        allowedOrigins: [], 
+        blockPrivateHosts: false,
+        enforceTls: true
+      });
+      gateway.stop();
+      gateway = new Gateway();
+      gateway.start();
+
+      const ws = new WebSocket(createWsUrl('irc.example.com', 6697, true));
+
+      await new Promise<void>((resolve, reject) => {
+        ws.on('open', () => resolve());
+        ws.on('error', reject);
+        setTimeout(() => reject(new Error('timeout')), 1000);
+      });
+
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.close();
+    });
+
+    it('allows insecure connections with allowInsecure override when enforceTls is true', async () => {
+      loadConfig({ 
+        port: TEST_PORT, 
+        host: '127.0.0.1', 
+        path: '/webirc', 
+        allowedOrigins: [], 
+        blockPrivateHosts: false,
+        enforceTls: true
+      });
+      gateway.stop();
+      gateway = new Gateway();
+      gateway.start();
+
+      const params = new URLSearchParams({
+        host: 'irc.example.com',
+        port: '6667',
+        tls: 'false',
+        allowInsecure: 'true'
+      });
+      const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT}/webirc?${params.toString()}`);
+
+      await new Promise<void>((resolve, reject) => {
+        ws.on('open', () => resolve());
+        ws.on('error', reject);
+        setTimeout(() => reject(new Error('timeout')), 1000);
+      });
+
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.close();
+    });
+  });
 });
