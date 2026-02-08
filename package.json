@@ -1,7 +1,7 @@
 {
   "name": "sic-gateway",
   "description": "Simple IRC Client WebSocket Gateway",
-  "version": "1.0.0",
+  "version": "1.0.15",
   "license": "AGPL-3.0-or-later",
   "type": "module",
   "scripts": {
