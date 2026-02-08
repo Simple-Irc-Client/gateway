@@ -50,7 +50,7 @@ function isPrivateHost(host: string): boolean {
   }
 
   // IPv4-mapped/compatible IPv6 (e.g. ::ffff:127.0.0.1, ::ffff:10.0.0.1, ::127.0.0.1)
-  const v4MappedMatch = ipv6.match(/^::(?:ffff:)?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  const v4MappedMatch = /^::(?:ffff:)?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(ipv6);
   if (v4MappedMatch) {
     return isPrivateHost(v4MappedMatch[1]);
   }
