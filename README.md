@@ -1,5 +1,7 @@
 # IRC Gateway
 
+[![Build Status](https://github.com/Simple-Irc-Client/gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/Simple-Irc-Client/gateway/actions/workflows/ci.yml)
+
 WebSocket to IRC gateway for Simple IRC Client.
 
 ## Project Structure
