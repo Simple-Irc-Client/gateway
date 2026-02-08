@@ -147,7 +147,7 @@ export class Gateway {
   });
 
   /** WebSocket server instance */
-  private webSocketServer = new WebSocketServer({ noServer: true });
+  private webSocketServer = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
 
   /** Map of connected clients by their ID */
   private connectedClients = new Map<string, ConnectedClient>();
@@ -318,6 +318,10 @@ export class Gateway {
 
     webSocket.on('close', () => {
       this.handleClientDisconnect(client, config.quitMessage);
+    });
+
+    webSocket.on('error', (error: Error) => {
+      logger.warn(`[${client.id}] WebSocket error: ${error.message}`);
     });
   }
 

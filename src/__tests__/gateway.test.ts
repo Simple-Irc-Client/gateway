@@ -590,6 +590,22 @@ describe('Gateway', () => {
     });
   });
 
+  it('closes connection when message exceeds maxPayload (64 KB)', async () => {
+    const ws = new WebSocket(createWsUrl(), { maxPayload: 0 });
+
+    await new Promise<void>((resolve) => ws.on('open', resolve));
+
+    const oversized = 'A'.repeat(65 * 1024);
+
+    await new Promise<void>((resolve) => {
+      ws.on('close', () => resolve());
+      ws.on('error', () => { /* expected — server closes for oversized payload */ });
+      ws.send(oversized);
+    });
+
+    expect(ws.readyState).not.toBe(WebSocket.OPEN);
+  });
+
   it('handles multiple lines in single message', async () => {
     const ws = new WebSocket(createWsUrl());
 
