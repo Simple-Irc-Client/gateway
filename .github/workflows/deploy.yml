@@ -44,7 +44,12 @@ jobs:
           eval "$(ssh-agent -s)"
           echo "SSH agent started"
 
-          echo "$SSH_PASS" | SSH_ASKPASS_REQUIRE=force SSH_ASKPASS=/bin/cat ssh-add ~/.ssh/deploy_key
+          ASKPASS_SCRIPT=$(mktemp)
+          echo '#!/bin/sh' > "$ASKPASS_SCRIPT"
+          echo "echo \"\$SSH_PASS\"" >> "$ASKPASS_SCRIPT"
+          chmod +x "$ASKPASS_SCRIPT"
+          SSH_ASKPASS="$ASKPASS_SCRIPT" SSH_ASKPASS_REQUIRE=force ssh-add ~/.ssh/deploy_key
+          rm -f "$ASKPASS_SCRIPT"
           echo "SSH key added to agent"
 
           ssh root@$SSH_HOST "mkdir -p /opt/sic-gateway"
