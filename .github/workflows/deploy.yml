@@ -52,11 +52,69 @@ jobs:
           rm -f "$ASKPASS_SCRIPT"
           echo "SSH key added to agent"
 
+          ssh root@$SSH_HOST 'if ! command -v caddy &> /dev/null; then
+            echo "Caddy not found, installing..."
+            apt-get update
+            apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl
+            curl -1sLf "https://dl.cloudsmith.io/public/caddy/stable/gpg.key" | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+            curl -1sLf "https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt" | tee /etc/apt/sources.list.d/caddy-stable.list
+            apt-get update
+            apt-get install -y caddy
+            echo "Caddy installed"
+          else
+            echo "Caddy already installed, skipping"
+          fi'
+
           ssh root@$SSH_HOST "mkdir -p /opt/sic-gateway"
           echo "Remote directory created"
 
           scp dist/gateway.js root@$SSH_HOST:/opt/sic-gateway/gateway.js
           echo "File deployed"
+
+          ssh root@$SSH_HOST 'if [ ! -f /etc/systemd/system/sic-gateway.service ]; then
+            cat > /etc/systemd/system/sic-gateway.service << "UNIT"
+          [Unit]
+          Description=Simple IRC Client Gateway
+          After=network.target
+
+          [Service]
+          Type=simple
+          User=www-data
+          WorkingDirectory=/opt/sic-gateway
+          ExecStart=/usr/bin/node gateway.js
+          Restart=always
+          RestartSec=10
+          Environment=PORT=8667
+          Environment=HOST=0.0.0.0
+          Environment=PATH_PREFIX=/webirc
+          Environment=ALLOWED_ORIGINS=https://simpleircclient.com
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+            systemctl daemon-reload
+            systemctl enable sic-gateway
+            echo "Service file created and enabled"
+          else
+            echo "Service file already exists, skipping"
+          fi'
+
+          ssh root@$SSH_HOST 'if [ ! -f /etc/caddy/Caddyfile ]; then
+            mkdir -p /etc/caddy
+            cat > /etc/caddy/Caddyfile << "CADDYFILE"
+          irc.simpleircclient.com {
+              reverse_proxy 127.0.0.1:8667 {
+                transport http {
+                  versions 1.1
+                }
+              }
+          }
+          CADDYFILE
+            systemctl reload caddy
+            echo "Caddyfile created and Caddy reloaded"
+          else
+            echo "Caddyfile already exists, skipping"
+          fi'
 
           ssh root@$SSH_HOST "systemctl restart sic-gateway"
           echo "Service restarted"
