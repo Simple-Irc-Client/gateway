@@ -7,7 +7,6 @@ await esbuild.build({
   target: 'node20',
   format: 'esm',
   outfile: './dist/gateway.js',
-  external: ['iconv-lite'],
   banner: {
     js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);",
   },
