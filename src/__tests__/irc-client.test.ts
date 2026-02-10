@@ -240,7 +240,7 @@ describe('IrcClient line parsing', () => {
     expect(onConnected).not.toHaveBeenCalled();
   });
 
-  it('destroys connection when receive buffer exceeds 128KB', async () => {
+  it('destroys connection when receive buffer exceeds 2MB', async () => {
     const onClose = vi.fn();
     const onError = vi.fn();
     client.on('close', onClose);
@@ -249,8 +249,12 @@ describe('IrcClient line parsing', () => {
     client.connect({ host: '127.0.0.1', port: serverPort, nick: 'testnick' });
     await new Promise((r) => setTimeout(r, 50));
 
-    // Send 128KB of data without line terminators to overflow the buffer
-    const bigData = Buffer.alloc(129 * 1024, 0x41);
+    // Absorb ECONNRESET on the server socket when client destroys connection
+    // eslint-disable-next-line @typescript-eslint/no-empty-function
+    serverSocket?.on('error', () => {});
+
+    // Send 2.1MB of data without line terminators to overflow the buffer
+    const bigData = Buffer.alloc(2.1 * 1024 * 1024, 0x41);
     serverSocket?.write(bigData);
 
     await new Promise((r) => setTimeout(r, 100));

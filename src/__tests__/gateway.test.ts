@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Gateway } from '../gateway.js';
 import { loadConfig } from '../config.js';
+import { IrcClient } from '../irc-client.js';
 import WebSocket from 'ws';
 import { createServer as createTcpServer, type Server as TcpServer } from 'net';
 
@@ -19,6 +20,8 @@ describe('Gateway', () => {
   };
 
   beforeEach(() => {
+    // eslint-disable-next-line @typescript-eslint/no-empty-function
+    vi.spyOn(IrcClient.prototype, 'connectRaw').mockImplementation(() => {});
     loadConfig({ port: TEST_PORT, host: '127.0.0.1', path: '/webirc', allowedOrigins: [], blockPrivateHosts: false });
     gateway = new Gateway();
     gateway.start();
@@ -527,6 +530,7 @@ describe('Gateway', () => {
     let receivedLines: string[];
 
     beforeEach(async () => {
+      vi.mocked(IrcClient.prototype.connectRaw).mockRestore();
       receivedLines = [];
       ircServer = createTcpServer((socket) => {
         socket.on('data', (data) => {

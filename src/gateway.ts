@@ -432,7 +432,7 @@ export class Gateway {
     // Forward raw IRC command to IRC server
     if (client.ircClient) {
       // Handle multiple lines (some clients might batch)
-      const lines = rawMessage.split(/\r?\n/).filter(line => line.length > 0);
+      const lines = rawMessage.split(/[\r\n]+/).filter(line => line.length > 0);
       for (const line of lines) {
         client.ircClient.send(line);
       }

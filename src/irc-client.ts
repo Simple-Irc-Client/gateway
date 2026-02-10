@@ -92,8 +92,8 @@ const CONNECTION_TIMEOUT_MS = 30000;
 /** Timeout for receiving server response after sending PING (60 seconds) */
 const PONG_TIMEOUT_MS = 60000;
 
-/** Maximum receive buffer size before dropping the connection (128KB) */
-const MAX_RECEIVE_BUFFER_SIZE = 128 * 1024;
+/** Maximum receive buffer size before dropping the connection (2MB) */
+const MAX_RECEIVE_BUFFER_SIZE = 2 * 1024 * 1024;
 
 /**
  * Pattern to match RPL_WELCOME (001) from a server
@@ -354,13 +354,6 @@ export class IrcClient extends EventEmitter {
     // Append new data to buffer
     this.receiveBuffer = Buffer.concat([this.receiveBuffer, data]);
 
-    // Guard against unbounded buffer growth (e.g. malicious server sending
-    // data without line terminators)
-    if (this.receiveBuffer.length > MAX_RECEIVE_BUFFER_SIZE) {
-      this.socket?.destroy(new Error('Receive buffer overflow'));
-      return;
-    }
-
     // Process complete lines
     let lineEndIndex: number;
     while ((lineEndIndex = this.receiveBuffer.indexOf(IRC_LINE_ENDING)) !== -1) {
@@ -375,6 +368,13 @@ export class IrcClient extends EventEmitter {
       if (line) {
         this.handleIrcLine(line);
       }
+    }
+
+    // Guard against unbounded buffer growth (e.g. malicious server sending
+    // data without line terminators). After processing complete lines, only
+    // the last incomplete line remains — this should be small (< 512 bytes).
+    if (this.receiveBuffer.length > MAX_RECEIVE_BUFFER_SIZE) {
+      this.socket?.destroy(new Error('Receive buffer overflow'));
     }
   }
 
@@ -410,7 +410,7 @@ export class IrcClient extends EventEmitter {
    */
   send(line: string): void {
     if (this.socket?.writable) {
-      const encodedLine = this.encodeString(`${line}${IRC_LINE_ENDING}`);
+      const encodedLine = this.encodeString(`${stripCRLF(line)}${IRC_LINE_ENDING}`);
       this.socket.write(encodedLine);
 
       // Emit raw line for logging (isFromServer = false)
