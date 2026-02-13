@@ -16,7 +16,6 @@
  *
  * Optional query parameters:
  * - tls: Use TLS (true/false, default: false)
- * - rejectUnauthorized: Validate TLS certificates (true/false, default: true)
  * - encoding: Character encoding (default: utf8)
  */
 
@@ -186,7 +185,6 @@ interface ConnectedClient {
     host: string;
     port: number;
     tls: boolean;
-    rejectUnauthorized: boolean;
     encoding: string;
   } | null;
 }
@@ -282,7 +280,6 @@ export class Gateway {
     const portStr = requestUrl.searchParams.get('port');
     const port = portStr ? parseInt(portStr, 10) : null;
     const tls = requestUrl.searchParams.get('tls') === 'true';
-    const rejectUnauthorized = requestUrl.searchParams.get('rejectUnauthorized') !== 'false';
     const encodingParam = requestUrl.searchParams.get('encoding') ?? 'utf8';
     const encoding = ALLOWED_ENCODINGS.has(encodingParam.toLowerCase()) ? encodingParam : 'utf8';
 
@@ -328,7 +325,7 @@ export class Gateway {
 
     // Accept the WebSocket connection
     this.webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
-      this.handleNewClient(webSocket, clientIp, { host, port, tls, rejectUnauthorized, encoding });
+      this.handleNewClient(webSocket, clientIp, { host, port, tls, encoding });
     });
   }
 
@@ -346,7 +343,7 @@ export class Gateway {
   private handleNewClient(
     webSocket: WebSocket,
     clientIp: string,
-    serverConfig: { host: string; port: number; tls: boolean; rejectUnauthorized: boolean; encoding: string }
+    serverConfig: { host: string; port: number; tls: boolean; encoding: string }
   ): void {
     const config = getConfig();
 
@@ -418,7 +415,6 @@ export class Gateway {
       host: client.serverConfig.host,
       port: client.serverConfig.port,
       tls: client.serverConfig.tls,
-      rejectUnauthorized: client.serverConfig.rejectUnauthorized,
       encoding: client.serverConfig.encoding,
       webirc: webircConfig,
     });

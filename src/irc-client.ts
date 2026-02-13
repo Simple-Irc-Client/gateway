@@ -28,8 +28,6 @@ interface SocketConnectionOptions {
   port: number;
   /** Whether to use TLS encryption */
   tls?: boolean;
-  /** Accept self-signed / invalid TLS certificates (default: false) */
-  rejectUnauthorized?: boolean;
   /** Character encoding for messages (defaults to utf8) */
   encoding?: string;
   /** WEBIRC configuration for passing real client IP to server */
@@ -268,11 +266,10 @@ export class IrcClient extends EventEmitter {
     let socket: net.Socket | tls.TLSSocket;
 
     if (options.tls) {
-      // TLS connection — validate certificates by default;
-      // only skip validation when explicitly opted in per-server
+      // TLS connection — always validate certificates
       socket = tls.connect({
         ...connectionConfig,
-        rejectUnauthorized: options.rejectUnauthorized !== false,
+        rejectUnauthorized: true,
       });
     } else {
       // Plain TCP connection
