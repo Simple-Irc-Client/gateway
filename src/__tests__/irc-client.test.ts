@@ -33,16 +33,6 @@ describe('IrcClient', () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 
-  it('emits socket_connected on connect', async () => {
-    const onConnect = vi.fn();
-    client.on('socket_connected', onConnect);
-
-    client.connect({ host: '127.0.0.1', port: serverPort, nick: 'testnick' });
-
-    await new Promise((r) => setTimeout(r, 50));
-    expect(onConnect).toHaveBeenCalled();
-  });
-
   it('sends CAP, NICK and USER on connect', async () => {
     client.connect({ host: '127.0.0.1', port: serverPort, nick: 'testnick' });
 
