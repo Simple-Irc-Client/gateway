@@ -33,7 +33,7 @@ describe('IrcClient', () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 
-  it('emits socket_connected on connect', async () => {
+  it('emits socket connected on connect', async () => {
     const onConnect = vi.fn();
     client.on('socket connected', onConnect);
 
