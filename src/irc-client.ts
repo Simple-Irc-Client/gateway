@@ -122,6 +122,7 @@ const RPL_WELCOME_PATTERN = /^(@\S+ )?:[^\s!@]+ 001 /;
  * - Automatic PING response and keepalive
  *
  * Events emitted:
+ * - 'socket connected': TCP/TLS connection established
  * - 'connected': IRC registration complete (received 001)
  * - 'close': Connection closed
  * - 'error': Connection error occurred
@@ -243,6 +244,8 @@ export class IrcClient extends EventEmitter {
     // Handshake succeeded — disable the connection establishment timeout
     this.socket?.setTimeout(0);
 
+    this.emit('socket connected');
+
     // Send WEBIRC command if configured (must be first)
     if (options.webirc) {
       if (!options.tls) {
@@ -298,6 +301,8 @@ export class IrcClient extends EventEmitter {
   private handleSocketConnected(options: IrcConnectionOptions): void {
     // Handshake succeeded — disable the connection establishment timeout
     this.socket?.setTimeout(0);
+
+    this.emit('socket connected');
 
     // Send WEBIRC command if configured (must be first)
     if (options.webirc) {
