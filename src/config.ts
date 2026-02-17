@@ -54,6 +54,9 @@ export interface Config {
 
   /** Enforce TLS for all IRC server connections (default: false for backward compatibility) */
   enforceTls: boolean;
+
+  /** Timeout in seconds for IRC server to respond after PING (default: 120) */
+  pongTimeout: number;
 }
 
 // ============================================================================
@@ -75,6 +78,7 @@ const DEFAULT_CONFIG: Config = {
   quitMessage: 'Simple IRC Client',
   realname: 'Simple IRC Client user',
   enforceTls: false,
+  pongTimeout: 120,
 };
 
 // ============================================================================

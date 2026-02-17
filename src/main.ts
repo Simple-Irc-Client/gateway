@@ -59,6 +59,7 @@ function getConfigFromEnvironment(): Partial<Config> {
     allowedServers: parseAllowedServers(process.env.ALLOWED_SERVERS),
     allowedOrigins: parseAllowedServers(process.env.ALLOWED_ORIGINS),
     trustProxy: process.env.TRUST_PROXY === 'true',
+    pongTimeout: parseIntOrUndefined(process.env.PONG_TIMEOUT),
   };
 }
 

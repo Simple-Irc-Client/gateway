@@ -417,6 +417,7 @@ export class Gateway {
       tls: client.serverConfig.tls,
       encoding: client.serverConfig.encoding,
       webirc: webircConfig,
+      pongTimeout: config.pongTimeout,
     });
 
     logger.info(`[${client.id}] Connecting to ${client.serverConfig.host}:${client.serverConfig.port}`);

@@ -32,6 +32,8 @@ interface SocketConnectionOptions {
   encoding?: string;
   /** WEBIRC configuration for passing real client IP to server */
   webirc?: WebircConfig;
+  /** Timeout in seconds for server to respond after PING (default: 120) */
+  pongTimeout?: number;
 }
 
 /**
@@ -87,8 +89,8 @@ const PING_INTERVAL_MS = 30000;
 /** Timeout for TCP/TLS connection establishment (30 seconds) */
 const CONNECTION_TIMEOUT_MS = 30000;
 
-/** Timeout for receiving server response after sending PING (60 seconds) */
-const PONG_TIMEOUT_MS = 60000;
+/** Default timeout for receiving server response after sending PING (120 seconds) */
+const DEFAULT_PONG_TIMEOUT_MS = 120000;
 
 /** Maximum receive buffer size before dropping the connection (2MB) */
 const MAX_RECEIVE_BUFFER_SIZE = 2 * 1024 * 1024;
@@ -142,6 +144,9 @@ export class IrcClient extends EventEmitter {
   /** Timer that fires if server doesn't respond after PING */
   private pongTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /** Resolved PONG timeout in milliseconds */
+  private pongTimeoutMs = DEFAULT_PONG_TIMEOUT_MS;
+
   // ==========================================================================
   // Connection Management
   // ==========================================================================
@@ -162,6 +167,7 @@ export class IrcClient extends EventEmitter {
     // Initialize connection state
     this.characterEncoding = options.encoding ?? 'utf8';
     this.receiveBuffer = Buffer.alloc(0);
+    this.pongTimeoutMs = (options.pongTimeout ?? 120) * 1000;
 
     // Create socket (TLS or plain TCP)
     const socket = this.createSocket(options);
@@ -202,6 +208,7 @@ export class IrcClient extends EventEmitter {
     // Initialize connection state
     this.characterEncoding = options.encoding ?? 'utf8';
     this.receiveBuffer = Buffer.alloc(0);
+    this.pongTimeoutMs = (options.pongTimeout ?? 120) * 1000;
 
     // Create socket (TLS or plain TCP)
     const socket = this.createSocket(options);
@@ -484,7 +491,7 @@ export class IrcClient extends EventEmitter {
       this.clearPongTimeout();
       this.pongTimeoutTimer = setTimeout(() => {
         this.socket?.destroy(new Error('PONG timeout: server unresponsive'));
-      }, PONG_TIMEOUT_MS);
+      }, this.pongTimeoutMs);
     }, PING_INTERVAL_MS);
   }
 
