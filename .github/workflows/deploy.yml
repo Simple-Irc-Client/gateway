@@ -118,3 +118,11 @@ jobs:
 
           ssh root@$SSH_HOST "systemctl restart sic-gateway"
           echo "Service restarted"
+
+          sleep 5
+          ssh root@$SSH_HOST "systemctl is-active --quiet sic-gateway" || {
+            echo "ERROR: sic-gateway service failed to start"
+            ssh root@$SSH_HOST "systemctl status sic-gateway --no-pager"
+            exit 1
+          }
+          echo "Service is running"
