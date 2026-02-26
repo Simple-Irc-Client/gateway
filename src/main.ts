@@ -60,6 +60,10 @@ function getConfigFromEnvironment(): Partial<Config> {
     allowedOrigins: parseAllowedServers(process.env.ALLOWED_ORIGINS),
     trustProxy: process.env.TRUST_PROXY === 'true',
     pongTimeout: parseIntOrUndefined(process.env.PONG_TIMEOUT),
+    wsPingInterval: parseIntOrUndefined(process.env.WS_PING_INTERVAL),
+    wsPongTimeout: parseIntOrUndefined(process.env.WS_PONG_TIMEOUT),
+    registrationTimeout: parseIntOrUndefined(process.env.REGISTRATION_TIMEOUT),
+    idleTimeout: parseIntOrUndefined(process.env.IDLE_TIMEOUT),
   };
 }
 

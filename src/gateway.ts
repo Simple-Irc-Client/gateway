@@ -187,6 +187,16 @@ interface ConnectedClient {
     tls: boolean;
     encoding: string;
   } | null;
+  /** Timer for periodic WebSocket ping */
+  wsPingTimer: ReturnType<typeof setInterval> | null;
+  /** Timer for WebSocket pong response timeout */
+  wsPongTimer: ReturnType<typeof setTimeout> | null;
+  /** Timer for registration timeout (NICK/USER must be sent within this period) */
+  registrationTimer: ReturnType<typeof setTimeout> | null;
+  /** Whether the client has completed IRC registration (sent NICK or USER) */
+  isRegistered: boolean;
+  /** Timer for idle connection timeout (no meaningful IRC traffic) */
+  idleTimer: ReturnType<typeof setTimeout> | null;
 }
 
 // ============================================================================
@@ -359,6 +369,11 @@ export class Gateway {
       messageCount: 0,
       rateLimitWindowStart: Date.now(),
       serverConfig: serverConfig,
+      wsPingTimer: null,
+      wsPongTimer: null,
+      registrationTimer: null,
+      isRegistered: false,
+      idleTimer: null,
     };
 
     // Track the client
@@ -385,6 +400,19 @@ export class Gateway {
     webSocket.on('error', (error: Error) => {
       logger.warn(`[${client.id}] WebSocket error: ${error.message}`);
     });
+
+    webSocket.on('pong', () => {
+      this.clearWsPongTimer(client);
+    });
+
+    // Start WebSocket-level keepalive pings
+    this.startWsPing(client, config);
+
+    // Start registration timeout — client must send NICK/USER within the window
+    this.startRegistrationTimeout(client, config);
+
+    // Start idle timeout — resets on meaningful IRC traffic
+    this.resetIdleTimeout(client, config);
   }
 
   /**
@@ -427,6 +455,11 @@ export class Gateway {
    * Handle client disconnection
    */
   private handleClientDisconnect(client: ConnectedClient, quitMessage: string): void {
+    // Stop all timers
+    this.stopWsPing(client);
+    this.clearRegistrationTimeout(client);
+    this.clearIdleTimeout(client);
+
     // Disconnect from IRC if connected
     if (client.ircClient) {
       client.ircClient.quit(quitMessage);
@@ -496,6 +529,20 @@ export class Gateway {
       // Handle multiple lines (some clients might batch)
       const lines = rawMessage.split(/[\r\n]+/).filter(line => line.length > 0);
       for (const line of lines) {
+        // Check for registration commands (NICK/USER/CAP/PASS)
+        if (!client.isRegistered) {
+          const command = line.split(' ')[0]?.toUpperCase();
+          if (command === 'NICK' || command === 'USER') {
+            this.completeRegistration(client);
+          }
+        }
+
+        // Reset idle timeout on meaningful traffic (not PING/PONG)
+        const command = line.split(' ')[0]?.toUpperCase();
+        if (command !== 'PING' && command !== 'PONG') {
+          this.resetIdleTimeout(client, getConfig());
+        }
+
         client.ircClient.send(line);
       }
     }
@@ -510,6 +557,14 @@ export class Gateway {
       if (isFromServer) {
         const direction = '>>';
         logger.debug(`[${client.id}] ${direction} ${line}`);
+
+        // Reset idle timeout on meaningful server traffic (not PING/PONG)
+        const command = line.startsWith(':')
+          ? line.split(' ')[1]?.toUpperCase()
+          : line.split(' ')[0]?.toUpperCase();
+        if (command !== 'PING' && command !== 'PONG') {
+          this.resetIdleTimeout(client, getConfig());
+        }
 
         // Send raw IRC line to WebSocket client
         this.sendRawToClient(client.webSocket, line);
@@ -531,6 +586,120 @@ export class Gateway {
       // Send error as IRC ERROR message
       this.sendRawToClient(client.webSocket, `ERROR :${error.message}`);
     });
+  }
+
+  // ==========================================================================
+  // WebSocket Keepalive (Ping/Pong)
+  // ==========================================================================
+
+  /**
+   * Start periodic WebSocket pings for a client.
+   * If the client doesn't respond with a pong within the timeout,
+   * the connection is terminated to free resources.
+   */
+  private startWsPing(client: ConnectedClient, config: ReturnType<typeof getConfig>): void {
+    const intervalMs = config.wsPingInterval * 1000;
+    const timeoutMs = config.wsPongTimeout * 1000;
+
+    client.wsPingTimer = setInterval(() => {
+      if (client.webSocket.readyState !== WebSocket.OPEN) {
+        this.stopWsPing(client);
+        return;
+      }
+
+      client.webSocket.ping();
+
+      client.wsPongTimer = setTimeout(() => {
+        logger.info(`[${client.id}] WebSocket pong timeout, terminating connection`);
+        client.webSocket.terminate();
+      }, timeoutMs);
+    }, intervalMs);
+  }
+
+  /**
+   * Clear the pong response timeout (called when pong is received)
+   */
+  private clearWsPongTimer(client: ConnectedClient): void {
+    if (client.wsPongTimer !== null) {
+      clearTimeout(client.wsPongTimer);
+      client.wsPongTimer = null;
+    }
+  }
+
+  /**
+   * Stop all WebSocket keepalive timers for a client
+   */
+  private stopWsPing(client: ConnectedClient): void {
+    if (client.wsPingTimer !== null) {
+      clearInterval(client.wsPingTimer);
+      client.wsPingTimer = null;
+    }
+    this.clearWsPongTimer(client);
+  }
+
+  // ==========================================================================
+  // Connection Idle Timeouts
+  // ==========================================================================
+
+  /**
+   * Start registration timeout. If the client doesn't send NICK or USER
+   * within the configured window, the connection is terminated.
+   */
+  private startRegistrationTimeout(client: ConnectedClient, config: ReturnType<typeof getConfig>): void {
+    if (config.registrationTimeout <= 0) return;
+
+    client.registrationTimer = setTimeout(() => {
+      if (!client.isRegistered) {
+        logger.info(`[${client.id}] Registration timeout, no NICK/USER received`);
+        this.sendRawToClient(client.webSocket, 'ERROR :Registration timeout');
+        client.webSocket.close();
+      }
+    }, config.registrationTimeout * 1000);
+  }
+
+  /**
+   * Clear the registration timeout (called when NICK/USER is received)
+   */
+  private clearRegistrationTimeout(client: ConnectedClient): void {
+    if (client.registrationTimer !== null) {
+      clearTimeout(client.registrationTimer);
+      client.registrationTimer = null;
+    }
+  }
+
+  /**
+   * Mark the client as registered and clear the registration timeout
+   */
+  private completeRegistration(client: ConnectedClient): void {
+    client.isRegistered = true;
+    this.clearRegistrationTimeout(client);
+  }
+
+  /**
+   * Reset the idle timeout. Called on meaningful IRC traffic (not PING/PONG).
+   * If no meaningful traffic occurs within the configured window, the
+   * connection is terminated.
+   */
+  private resetIdleTimeout(client: ConnectedClient, config: ReturnType<typeof getConfig>): void {
+    if (config.idleTimeout <= 0) return;
+
+    this.clearIdleTimeout(client);
+
+    client.idleTimer = setTimeout(() => {
+      logger.info(`[${client.id}] Idle timeout, no IRC traffic for ${config.idleTimeout}s`);
+      this.sendRawToClient(client.webSocket, `ERROR :Idle timeout (${config.idleTimeout}s)`);
+      client.webSocket.close();
+    }, config.idleTimeout * 1000);
+  }
+
+  /**
+   * Clear the idle timeout
+   */
+  private clearIdleTimeout(client: ConnectedClient): void {
+    if (client.idleTimer !== null) {
+      clearTimeout(client.idleTimer);
+      client.idleTimer = null;
+    }
   }
 
   // ==========================================================================

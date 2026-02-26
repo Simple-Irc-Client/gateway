@@ -57,6 +57,18 @@ export interface Config {
 
   /** Timeout in seconds for IRC server to respond after PING (default: 120) */
   pongTimeout: number;
+
+  /** Interval in seconds for WebSocket ping/pong keepalive (default: 30) */
+  wsPingInterval: number;
+
+  /** Timeout in seconds for WebSocket pong response before disconnecting (default: 10) */
+  wsPongTimeout: number;
+
+  /** Timeout in seconds for client to send NICK/USER after connecting (default: 30, 0 = disabled) */
+  registrationTimeout: number;
+
+  /** Timeout in seconds to disconnect idle clients with no meaningful IRC traffic (default: 600, 0 = disabled) */
+  idleTimeout: number;
 }
 
 // ============================================================================
@@ -79,6 +91,10 @@ const DEFAULT_CONFIG: Config = {
   realname: 'Simple IRC Client user',
   enforceTls: false,
   pongTimeout: 120,
+  wsPingInterval: 30,
+  wsPongTimeout: 10,
+  registrationTimeout: 30,
+  idleTimeout: 600,
 };
 
 // ============================================================================

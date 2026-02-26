@@ -733,4 +733,288 @@ describe('Gateway', () => {
       ws.close();
     });
   });
+
+  describe('WebSocket ping/pong keepalive', () => {
+    it('sends ping frames to connected clients', async () => {
+      loadConfig({
+        port: TEST_PORT,
+        host: '127.0.0.1',
+        path: '/webirc',
+        allowedOrigins: [],
+        blockPrivateHosts: false,
+        wsPingInterval: 1,
+        wsPongTimeout: 3,
+      });
+      gateway.stop();
+      gateway = new Gateway();
+      gateway.start();
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const ws = new WebSocket(createWsUrl());
+      const pings: Buffer[] = [];
+
+      await new Promise<void>((resolve) => ws.on('open', resolve));
+
+      ws.on('ping', (data) => {
+        pings.push(data);
+      });
+
+      // Wait for at least one ping (interval is 1s)
+      await new Promise((r) => setTimeout(r, 1500));
+
+      expect(pings.length).toBeGreaterThanOrEqual(1);
+      ws.close();
+    });
+
+    it('terminates clients that do not respond to pings', async () => {
+      loadConfig({
+        port: TEST_PORT,
+        host: '127.0.0.1',
+        path: '/webirc',
+        allowedOrigins: [],
+        blockPrivateHosts: false,
+        wsPingInterval: 1,
+        wsPongTimeout: 1,
+      });
+      gateway.stop();
+      gateway = new Gateway();
+      gateway.start();
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const ws = new WebSocket(createWsUrl());
+
+      await new Promise<void>((resolve) => ws.on('open', resolve));
+
+      // Disable automatic pong responses
+      ws.pong = () => {};
+      ws.on('ping', () => { /* swallow — don't respond */ });
+
+      // Wait for ping (1s) + pong timeout (1s) + buffer
+      const closed = await new Promise<boolean>((resolve) => {
+        ws.on('close', () => resolve(true));
+        setTimeout(() => resolve(false), 4000);
+      });
+
+      expect(closed).toBe(true);
+    });
+
+    it('keeps connection alive when client responds to pings', async () => {
+      loadConfig({
+        port: TEST_PORT,
+        host: '127.0.0.1',
+        path: '/webirc',
+        allowedOrigins: [],
+        blockPrivateHosts: false,
+        wsPingInterval: 1,
+        wsPongTimeout: 1,
+      });
+      gateway.stop();
+      gateway = new Gateway();
+      gateway.start();
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      // ws library automatically responds to pings with pongs by default
+      const ws = new WebSocket(createWsUrl());
+
+      await new Promise<void>((resolve) => ws.on('open', resolve));
+
+      // Wait longer than ping + pong timeout — connection should survive
+      await new Promise((r) => setTimeout(r, 3500));
+
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.close();
+    });
+  });
+
+  describe('Registration timeout', () => {
+    it('disconnects clients that never send NICK/USER', async () => {
+      loadConfig({
+        port: TEST_PORT,
+        host: '127.0.0.1',
+        path: '/webirc',
+        allowedOrigins: [],
+        blockPrivateHosts: false,
+        registrationTimeout: 1,
+        idleTimeout: 0,
+      });
+      gateway.stop();
+      gateway = new Gateway();
+      gateway.start();
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const ws = new WebSocket(createWsUrl());
+      const messages: string[] = [];
+
+      await new Promise<void>((resolve) => ws.on('open', resolve));
+
+      ws.on('message', (data) => messages.push(data.toString()));
+
+      // Don't send NICK or USER — wait for timeout
+      const closed = await new Promise<boolean>((resolve) => {
+        ws.on('close', () => resolve(true));
+        setTimeout(() => resolve(false), 3000);
+      });
+
+      expect(closed).toBe(true);
+      expect(messages.some((m) => m.includes('Registration timeout'))).toBe(true);
+    });
+
+    it('does not disconnect clients that send NICK within the window', async () => {
+      loadConfig({
+        port: TEST_PORT,
+        host: '127.0.0.1',
+        path: '/webirc',
+        allowedOrigins: [],
+        blockPrivateHosts: false,
+        registrationTimeout: 1,
+        idleTimeout: 0,
+      });
+      gateway.stop();
+      gateway = new Gateway();
+      gateway.start();
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const ws = new WebSocket(createWsUrl());
+
+      await new Promise<void>((resolve) => ws.on('open', resolve));
+
+      // Send NICK immediately
+      ws.send('NICK testuser');
+
+      // Wait past the registration timeout
+      await new Promise((r) => setTimeout(r, 1500));
+
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.close();
+    });
+
+    it('does not disconnect clients that send USER within the window', async () => {
+      loadConfig({
+        port: TEST_PORT,
+        host: '127.0.0.1',
+        path: '/webirc',
+        allowedOrigins: [],
+        blockPrivateHosts: false,
+        registrationTimeout: 1,
+        idleTimeout: 0,
+      });
+      gateway.stop();
+      gateway = new Gateway();
+      gateway.start();
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const ws = new WebSocket(createWsUrl());
+
+      await new Promise<void>((resolve) => ws.on('open', resolve));
+
+      ws.send('USER testuser 0 * :Test');
+
+      await new Promise((r) => setTimeout(r, 1500));
+
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.close();
+    });
+  });
+
+  describe('Idle timeout', () => {
+    it('disconnects clients with no meaningful IRC traffic', async () => {
+      loadConfig({
+        port: TEST_PORT,
+        host: '127.0.0.1',
+        path: '/webirc',
+        allowedOrigins: [],
+        blockPrivateHosts: false,
+        registrationTimeout: 0,
+        idleTimeout: 1,
+      });
+      gateway.stop();
+      gateway = new Gateway();
+      gateway.start();
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const ws = new WebSocket(createWsUrl());
+      const messages: string[] = [];
+
+      await new Promise<void>((resolve) => ws.on('open', resolve));
+
+      ws.on('message', (data) => messages.push(data.toString()));
+
+      // Send only PING — should not reset idle timer
+      await new Promise((r) => setTimeout(r, 500));
+      ws.send('PING test');
+
+      const closed = await new Promise<boolean>((resolve) => {
+        ws.on('close', () => resolve(true));
+        setTimeout(() => resolve(false), 3000);
+      });
+
+      expect(closed).toBe(true);
+      expect(messages.some((m) => m.includes('Idle timeout'))).toBe(true);
+    });
+
+    it('resets idle timer on meaningful traffic', async () => {
+      loadConfig({
+        port: TEST_PORT,
+        host: '127.0.0.1',
+        path: '/webirc',
+        allowedOrigins: [],
+        blockPrivateHosts: false,
+        registrationTimeout: 0,
+        idleTimeout: 2,
+      });
+      gateway.stop();
+      gateway = new Gateway();
+      gateway.start();
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const ws = new WebSocket(createWsUrl());
+
+      await new Promise<void>((resolve) => ws.on('open', resolve));
+
+      // Send meaningful traffic at 1s — resets the 2s idle timer
+      await new Promise((r) => setTimeout(r, 1000));
+      ws.send('NICK testuser');
+
+      // At 2.5s total — would have timed out without the reset
+      await new Promise((r) => setTimeout(r, 1500));
+
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.close();
+    });
+
+    it('does not disconnect when idle timeout is disabled', async () => {
+      loadConfig({
+        port: TEST_PORT,
+        host: '127.0.0.1',
+        path: '/webirc',
+        allowedOrigins: [],
+        blockPrivateHosts: false,
+        registrationTimeout: 0,
+        idleTimeout: 0,
+      });
+      gateway.stop();
+      gateway = new Gateway();
+      gateway.start();
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const ws = new WebSocket(createWsUrl());
+
+      await new Promise<void>((resolve) => ws.on('open', resolve));
+
+      // Wait a while — should stay connected
+      await new Promise((r) => setTimeout(r, 1500));
+
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.close();
+    });
+  });
 });
