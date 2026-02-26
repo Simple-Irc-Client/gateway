@@ -788,6 +788,7 @@ describe('Gateway', () => {
       await new Promise<void>((resolve) => ws.on('open', resolve));
 
       // Disable automatic pong responses
+      // eslint-disable-next-line @typescript-eslint/no-empty-function
       ws.pong = () => {};
       ws.on('ping', () => { /* swallow — don't respond */ });
 
