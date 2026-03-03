@@ -18,15 +18,15 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@stylistic/eslint-plugin": "^5.8.0",
-    "@types/node": "^25.2.3",
+    "@stylistic/eslint-plugin": "^5.9.0",
+    "@types/node": "^25.3.3",
     "@types/ws": "^8.18.1",
     "esbuild": "^0.27.3",
-    "eslint": "^10.0.0",
+    "eslint": "^10.0.2",
     "eslint-config-prettier": "^10.1.8",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.56.0",
+    "typescript-eslint": "^8.56.1",
     "vitest": "^4.0.18"
   },
   "dependencies": {
