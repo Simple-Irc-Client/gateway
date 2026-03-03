@@ -85,7 +85,7 @@ const DEFAULT_CONFIG: Config = {
   maxClients: 1000,
   maxConnectionsPerIp: 10,
   trustProxy: false,
-  allowedOrigins: ['https://simpleircclient.com'],
+  allowedOrigins: ['https://app.simpleircclient.com'],
   blockPrivateHosts: true,
   quitMessage: 'Simple IRC Client',
   realname: 'Simple IRC Client user',
