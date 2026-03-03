@@ -138,6 +138,7 @@ describe('IdentdServer', () => {
       });
 
       // Must consume data for 'end' to fire on readable streams
+      // eslint-disable-next-line @typescript-eslint/no-empty-function
       socket.on('data', () => {});
       socket.on('end', () => resolve(true));
       socket.on('error', reject);
