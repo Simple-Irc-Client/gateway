@@ -147,6 +147,14 @@ export class IrcClient extends EventEmitter {
   /** Resolved PONG timeout in milliseconds */
   private pongTimeoutMs = DEFAULT_PONG_TIMEOUT_MS;
 
+  /** Socket metadata captured on connection (ports and addresses) */
+  private connectionMeta: {
+    localPort: number;
+    localAddress: string;
+    remotePort: number;
+    remoteAddress: string;
+  } | null = null;
+
   // ==========================================================================
   // Connection Management
   // ==========================================================================
@@ -244,7 +252,9 @@ export class IrcClient extends EventEmitter {
     // Handshake succeeded — disable the connection establishment timeout
     this.socket?.setTimeout(0);
 
-    this.emit('socket connected');
+    // Capture socket metadata before emitting
+    this.connectionMeta = this.captureSocketMeta();
+    this.emit('socket connected', this.connectionMeta);
 
     // Send WEBIRC command if configured (must be first)
     if (options.webirc) {
@@ -302,7 +312,9 @@ export class IrcClient extends EventEmitter {
     // Handshake succeeded — disable the connection establishment timeout
     this.socket?.setTimeout(0);
 
-    this.emit('socket connected');
+    // Capture socket metadata before emitting
+    this.connectionMeta = this.captureSocketMeta();
+    this.emit('socket connected', this.connectionMeta);
 
     // Send WEBIRC command if configured (must be first)
     if (options.webirc) {
@@ -340,6 +352,7 @@ export class IrcClient extends EventEmitter {
    */
   private handleSocketClosed(): void {
     this.stopPingTimer();
+    this.connectionMeta = null;
     this.emit('close');
   }
 
@@ -465,6 +478,7 @@ export class IrcClient extends EventEmitter {
    */
   destroy(): void {
     this.stopPingTimer();
+    this.connectionMeta = null;
 
     if (this.socket) {
       this.socket.destroy();
@@ -543,6 +557,27 @@ export class IrcClient extends EventEmitter {
   // ==========================================================================
   // State
   // ==========================================================================
+
+  /**
+   * Capture port/address metadata from the underlying socket
+   */
+  private captureSocketMeta() {
+    if (!this.socket) return null;
+    return {
+      localPort: this.socket.localPort ?? 0,
+      localAddress: this.socket.localAddress ?? '',
+      remotePort: this.socket.remotePort ?? 0,
+      remoteAddress: this.socket.remoteAddress ?? '',
+    };
+  }
+
+  /**
+   * Get socket metadata (local/remote ports and addresses)
+   * Available after 'socket connected' event, null after close
+   */
+  get socketMeta() {
+    return this.connectionMeta;
+  }
 
   /**
    * Check if the connection is currently active and writable

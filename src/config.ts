@@ -69,6 +69,15 @@ export interface Config {
 
   /** Timeout in seconds to disconnect idle clients with no meaningful IRC traffic (default: 600, 0 = disabled) */
   idleTimeout: number;
+
+  /** Enable identd (RFC 1413) server for IRC ident responses (default: false) */
+  identdEnabled: boolean;
+
+  /** Port for identd server (default: 113) */
+  identdPort: number;
+
+  /** Timeout in seconds for identd connections (default: 30) */
+  identdTimeout: number;
 }
 
 // ============================================================================
@@ -95,6 +104,9 @@ const DEFAULT_CONFIG: Config = {
   wsPongTimeout: 10,
   registrationTimeout: 30,
   idleTimeout: 600,
+  identdEnabled: false,
+  identdPort: 113,
+  identdTimeout: 30,
 };
 
 // ============================================================================

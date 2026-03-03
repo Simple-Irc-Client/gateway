@@ -24,6 +24,7 @@ import type { Duplex } from 'stream';
 import { createServer, type IncomingMessage } from 'http';
 import { getConfig } from './config.js';
 import { IrcClient } from './irc-client.js';
+import { IdentdServer } from './identd.js';
 import * as logger from './logger.js';
 
 // ============================================================================
@@ -197,6 +198,8 @@ interface ConnectedClient {
   isRegistered: boolean;
   /** Timer for idle connection timeout (no meaningful IRC traffic) */
   idleTimer: ReturnType<typeof setTimeout> | null;
+  /** Username for identd responses */
+  identUsername: string;
 }
 
 // ============================================================================
@@ -227,6 +230,9 @@ export class Gateway {
 
   /** Track number of connections per IP address for rate limiting */
   private connectionsPerIp = new Map<string, number>();
+
+  /** Identd server for responding to IRC ident queries */
+  private identdServer: IdentdServer | null = null;
 
   constructor() {
     // Handle WebSocket upgrade requests
@@ -333,9 +339,13 @@ export class Gateway {
       return;
     }
 
+    // Parse ident username from query param, fallback to IP-derived username
+    const identUsername = requestUrl.searchParams.get('ident')
+      ?? (clientIp.replace(/[^a-zA-Z0-9]/g, '').slice(0, 10) || 'webchat');
+
     // Accept the WebSocket connection
     this.webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
-      this.handleNewClient(webSocket, clientIp, { host, port, tls, encoding });
+      this.handleNewClient(webSocket, clientIp, { host, port, tls, encoding }, identUsername);
     });
   }
 
@@ -353,7 +363,8 @@ export class Gateway {
   private handleNewClient(
     webSocket: WebSocket,
     clientIp: string,
-    serverConfig: { host: string; port: number; tls: boolean; encoding: string }
+    serverConfig: { host: string; port: number; tls: boolean; encoding: string },
+    identUsername: string
   ): void {
     const config = getConfig();
 
@@ -374,6 +385,7 @@ export class Gateway {
       registrationTimer: null,
       isRegistered: false,
       idleTimer: null,
+      identUsername,
     };
 
     // Track the client
@@ -460,8 +472,12 @@ export class Gateway {
     this.clearRegistrationTimeout(client);
     this.clearIdleTimeout(client);
 
-    // Disconnect from IRC if connected
+    // Unregister identd entry and disconnect from IRC
     if (client.ircClient) {
+      const meta = client.ircClient.socketMeta;
+      if (meta && this.identdServer) {
+        this.identdServer.unregister(meta.localPort, meta.remotePort, meta.remoteAddress);
+      }
       client.ircClient.quit(quitMessage);
     }
 
@@ -552,6 +568,13 @@ export class Gateway {
    * Set up event handlers for an IRC client connection
    */
   private setupIrcEventHandlers(client: ConnectedClient, ircClient: IrcClient): void {
+    // Register identd entry when TCP socket connects to IRC server
+    ircClient.on('socket connected', (meta: { localPort: number; localAddress: string; remotePort: number; remoteAddress: string } | null) => {
+      if (meta && this.identdServer) {
+        this.identdServer.register(meta.localPort, meta.remotePort, meta.remoteAddress, client.identUsername);
+      }
+    });
+
     // Raw IRC message from server - forward to client
     ircClient.on('raw', (line: string, isFromServer: boolean) => {
       if (isFromServer) {
@@ -576,6 +599,12 @@ export class Gateway {
 
     // Connection closed
     ircClient.on('close', () => {
+      // Unregister identd entry
+      const meta = ircClient.socketMeta;
+      if (meta && this.identdServer) {
+        this.identdServer.unregister(meta.localPort, meta.remotePort, meta.remoteAddress);
+      }
+
       // Close WebSocket connection when IRC connection closes
       client.webSocket.close();
     });
@@ -724,6 +753,16 @@ export class Gateway {
    */
   start(): void {
     const config = getConfig();
+
+    // Start identd server if enabled
+    if (config.identdEnabled) {
+      this.identdServer = new IdentdServer(config.identdTimeout);
+      this.identdServer.start(config.identdPort, config.host).catch((error) => {
+        logger.warn(`[identd] Failed to start: ${(error as Error).message}`);
+        this.identdServer = null;
+      });
+    }
+
     this.httpServer.listen(config.port, config.host, () => {
       logger.success(`Gateway started on ${config.host}:${config.port}${config.path}`);
     });
@@ -746,6 +785,12 @@ export class Gateway {
     // Clear tracking maps
     this.connectedClients.clear();
     this.connectionsPerIp.clear();
+
+    // Stop identd server
+    if (this.identdServer) {
+      this.identdServer.stop();
+      this.identdServer = null;
+    }
 
     // Close servers
     this.webSocketServer.close();

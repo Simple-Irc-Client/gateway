@@ -16,6 +16,7 @@ import * as logger from './logger.js';
 
 export { Gateway } from './gateway.js';
 export { loadConfig, getConfig, type Config } from './config.js';
+export { IdentdServer } from './identd.js';
 
 // ============================================================================
 // Gateway Factory
@@ -64,6 +65,9 @@ function getConfigFromEnvironment(): Partial<Config> {
     wsPongTimeout: parseIntOrUndefined(process.env.WS_PONG_TIMEOUT),
     registrationTimeout: parseIntOrUndefined(process.env.REGISTRATION_TIMEOUT),
     idleTimeout: parseIntOrUndefined(process.env.IDLE_TIMEOUT),
+    identdEnabled: process.env.IDENTD_ENABLED === 'true' ? true : undefined,
+    identdPort: parseIntOrUndefined(process.env.IDENTD_PORT),
+    identdTimeout: parseIntOrUndefined(process.env.IDENTD_TIMEOUT),
   };
 }
 
