@@ -87,7 +87,7 @@ jobs:
           Environment=PORT=8667
           Environment=HOST=0.0.0.0
           Environment=PATH_PREFIX=/webirc
-          Environment=ALLOWED_ORIGINS=https://simpleircclient.com
+          Environment=ALLOWED_ORIGINS=https://app.simpleircclient.com
 
           [Install]
           WantedBy=multi-user.target
