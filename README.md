@@ -10,6 +10,7 @@ WebSocket to IRC gateway for Simple IRC Client.
 src/
 ├── config.ts      # Configuration interface and defaults
 ├── gateway.ts     # WebSocket server and client management
+├── identd.ts      # Identd (RFC 1413) server for IRC ident responses
 ├── irc-client.ts  # IRC protocol client with encoding support
 ├── logger.ts      # Colored console logging
 ├── main.ts        # Entry point
@@ -68,6 +69,13 @@ Restart=always
 RestartSec=5
 Environment=PORT=8667
 Environment=HOST=127.0.0.1
+
+# Identd — uncomment to enable (see "Identd" section below)
+# Environment=IDENTD_ENABLED=true
+# Environment=IDENTD_PORT=113
+
+# Allow binding to privileged port 113 without running as root
+# AmbientCapabilities=CAP_NET_BIND_SERVICE
 
 [Install]
 WantedBy=multi-user.target
@@ -134,6 +142,35 @@ server {
 | `WEBIRC_PASSWORD` | - | WEBIRC password (optional) |
 | `WEBIRC_GATEWAY` | gateway | WEBIRC gateway name |
 | `ALLOWED_SERVERS` | - | Comma-separated list (e.g., `irc.libera.chat:6697`) |
+| `IDENTD_ENABLED` | false | Enable identd (RFC 1413) server |
+| `IDENTD_PORT` | 113 | Identd listen port |
+| `IDENTD_TIMEOUT` | 30 | Identd connection timeout (seconds) |
+
+## Identd (RFC 1413)
+
+IRC servers query port 113 on connecting clients to verify identity. Without identd, users appear with an unverified ident (prefixed with `~`). Enabling the built-in identd server lets the gateway respond with the correct username.
+
+### Enable identd
+
+Add to your systemd service:
+
+```ini
+Environment=IDENTD_ENABLED=true
+Environment=IDENTD_PORT=113
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+```
+
+Port 113 is privileged (<1024). `AmbientCapabilities=CAP_NET_BIND_SERVICE` lets the `www-data` user bind to it without running as root. Alternatively, use a high port and redirect with iptables/Caddy (see below).
+
+### Client ident parameter
+
+WebSocket clients can pass a custom ident username via the `ident` query parameter:
+
+```
+ws://gateway:8667/webirc?host=irc.example.com&port=6697&tls=true&ident=myuser
+```
+
+If not provided, the gateway derives a username from the client's IP address.
 
 ## WEBIRC
 

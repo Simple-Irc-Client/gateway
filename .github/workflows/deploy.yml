@@ -88,6 +88,9 @@ jobs:
           Environment=HOST=0.0.0.0
           Environment=PATH_PREFIX=/webirc
           Environment=ALLOWED_ORIGINS=https://app.simpleircclient.com
+          Environment=IDENTD_ENABLED=true                                                                                                                                                                                                                                                                             
+          Environment=IDENTD_PORT=113                                                                                                                                                                                                                                                                                 
+          AmbientCapabilities=CAP_NET_BIND_SERVICE
 
           [Install]
           WantedBy=multi-user.target
