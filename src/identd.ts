@@ -76,13 +76,13 @@ export class IdentdServer {
     const key = this.makeKey(localPort, remotePort, remoteHost);
     const sanitized = sanitizeUsername(username);
     this.entries.set(key, sanitized);
-    logger.debug(`[identd] Registered ${key} → ${sanitized}`);
+    logger.info(`[identd] Registered ${key} → ${sanitized}`);
   }
 
   unregister(localPort: number, remotePort: number, remoteHost: string): void {
     const key = this.makeKey(localPort, remotePort, remoteHost);
     this.entries.delete(key);
-    logger.debug(`[identd] Unregistered ${key}`);
+    logger.info(`[identd] Unregistered ${key}`);
   }
 
   // ==========================================================================
@@ -182,8 +182,8 @@ export class IdentdServer {
 
     // Try immediate lookup
     const lookupKey = this.makeKey(clientPort, serverPort, normalizedRemote);
-    logger.debug(`[identd] Query from ${normalizedRemote}: ${serverPort},${clientPort} (key: ${lookupKey})`);
-    logger.debug(`[identd] Current entries: ${[...this.entries.keys()].join(', ') || '(empty)'}`);
+    logger.info(`[identd] Query from ${normalizedRemote}: ${serverPort},${clientPort} (key: ${lookupKey})`);
+    logger.info(`[identd] Current entries: ${[...this.entries.keys()].join(', ') || '(empty)'}`);
     const username = this.lookup(clientPort, serverPort, normalizedRemote);
     if (username) {
       this.respond(socket, portPair, `USERID : UNIX : ${username}`);
@@ -196,7 +196,7 @@ export class IdentdServer {
       if (retryUsername) {
         this.respond(socket, portPair, `USERID : UNIX : ${retryUsername}`);
       } else {
-        logger.debug(`[identd] NO-USER for key ${lookupKey}, entries: ${[...this.entries.keys()].join(', ') || '(empty)'}`);
+        logger.info(`[identd] NO-USER for key ${lookupKey}, entries: ${[...this.entries.keys()].join(', ') || '(empty)'}`);
         this.respond(socket, portPair, 'ERROR : NO-USER');
       }
     }, RETRY_DELAY_MS);
