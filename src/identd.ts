@@ -76,13 +76,13 @@ export class IdentdServer {
     const key = this.makeKey(localPort, remotePort, remoteHost);
     const sanitized = sanitizeUsername(username);
     this.entries.set(key, sanitized);
-    logger.debug(`[identd] Registered ${key} → ${sanitized}`);
+    logger.info(`[identd] Registered ${key} → ${sanitized}`);
   }
 
   unregister(localPort: number, remotePort: number, remoteHost: string): void {
     const key = this.makeKey(localPort, remotePort, remoteHost);
     this.entries.delete(key);
-    logger.debug(`[identd] Unregistered ${key}`);
+    logger.info(`[identd] Unregistered ${key}`);
   }
 
   // ==========================================================================
@@ -194,9 +194,10 @@ export class IdentdServer {
     setTimeout(() => {
       const retryUsername = this.lookup(localPort, remotePort, normalizedRemote);
       if (retryUsername) {
+        logger.info(`[identd] USER for ${this.makeKey(localPort, remotePort, normalizedRemote)}: ${retryUsername}`);
         this.respond(socket, portPair, `USERID : UNIX : ${retryUsername}`);
       } else {
-        logger.debug(`[identd] NO-USER for ${this.makeKey(localPort, remotePort, normalizedRemote)}, entries: ${[...this.entries.keys()].join(', ') || '(empty)'}`);
+        logger.info(`[identd] NO-USER for ${this.makeKey(localPort, remotePort, normalizedRemote)}, entries: ${[...this.entries.keys()].join(', ') || '(empty)'}`);
         this.respond(socket, portPair, 'ERROR : NO-USER');
       }
     }, RETRY_DELAY_MS);
