@@ -76,13 +76,13 @@ export class IdentdServer {
     const key = this.makeKey(localPort, remotePort, remoteHost);
     const sanitized = sanitizeUsername(username);
     this.entries.set(key, sanitized);
-    logger.info(`[identd] Registered ${key} → ${sanitized}`);
+    logger.debug(`[identd] Registered ${key} → ${sanitized}`);
   }
 
   unregister(localPort: number, remotePort: number, remoteHost: string): void {
     const key = this.makeKey(localPort, remotePort, remoteHost);
     this.entries.delete(key);
-    logger.info(`[identd] Unregistered ${key}`);
+    logger.debug(`[identd] Unregistered ${key}`);
   }
 
   // ==========================================================================
@@ -167,24 +167,24 @@ export class IdentdServer {
       return;
     }
 
-    const serverPort = parseInt(parts[0], 10);
-    const clientPort = parseInt(parts[1], 10);
+    // RFC 1413: query is "portOnServer, portOnClient"
+    // portOnServer = our local port (gateway's ephemeral port to IRC)
+    // portOnClient = the IRC server's port (remote port from our perspective)
+    const localPort = parseInt(parts[0], 10);
+    const remotePort = parseInt(parts[1], 10);
 
-    if (!this.isValidPort(serverPort) || !this.isValidPort(clientPort)) {
+    if (!this.isValidPort(localPort) || !this.isValidPort(remotePort)) {
       this.respond(socket, `${parts[0]} , ${parts[1]}`, 'ERROR : INVALID-PORT');
       return;
     }
 
-    const portPair = `${serverPort} , ${clientPort}`;
+    const portPair = `${localPort} , ${remotePort}`;
 
     // Normalize remoteAddress for lookup (strip ::ffff: IPv4-mapped prefix)
     const normalizedRemote = remoteAddress.replace(/^::ffff:/, '');
 
     // Try immediate lookup
-    const lookupKey = this.makeKey(clientPort, serverPort, normalizedRemote);
-    logger.info(`[identd] Query from ${normalizedRemote}: ${serverPort},${clientPort} (key: ${lookupKey})`);
-    logger.info(`[identd] Current entries: ${[...this.entries.keys()].join(', ') || '(empty)'}`);
-    const username = this.lookup(clientPort, serverPort, normalizedRemote);
+    const username = this.lookup(localPort, remotePort, normalizedRemote);
     if (username) {
       this.respond(socket, portPair, `USERID : UNIX : ${username}`);
       return;
@@ -192,11 +192,11 @@ export class IdentdServer {
 
     // Race condition mitigation: wait and retry once
     setTimeout(() => {
-      const retryUsername = this.lookup(clientPort, serverPort, normalizedRemote);
+      const retryUsername = this.lookup(localPort, remotePort, normalizedRemote);
       if (retryUsername) {
         this.respond(socket, portPair, `USERID : UNIX : ${retryUsername}`);
       } else {
-        logger.info(`[identd] NO-USER for key ${lookupKey}, entries: ${[...this.entries.keys()].join(', ') || '(empty)'}`);
+        logger.debug(`[identd] NO-USER for ${this.makeKey(localPort, remotePort, normalizedRemote)}, entries: ${[...this.entries.keys()].join(', ') || '(empty)'}`);
         this.respond(socket, portPair, 'ERROR : NO-USER');
       }
     }, RETRY_DELAY_MS);

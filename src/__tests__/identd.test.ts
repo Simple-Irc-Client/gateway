@@ -34,18 +34,18 @@ describe('IdentdServer', () => {
 
   it('responds with USERID for a registered entry', async () => {
     // Register: localPort=54321 (our ephemeral port to IRC), remotePort=6697 (IRC server port),
-    // remoteHost=127.0.0.1 (the IRC server asking)
+    // remoteHost=127.0.0.1 (the IRC server querying us)
     server.register(54321, 6697, '127.0.0.1', 'testuser');
 
-    // The IRC server queries: "serverPort, clientPort" where serverPort is its own port (6697)
-    // and clientPort is the gateway's local port (54321)
-    const response = await query(TEST_PORT, '6697, 54321\r\n');
+    // RFC 1413 query: "portOnServer, portOnClient"
+    // portOnServer = our localPort (54321), portOnClient = IRC server's port (6697)
+    const response = await query(TEST_PORT, '54321, 6697\r\n');
 
-    expect(response).toBe('6697 , 54321 : USERID : UNIX : testuser\r\n');
+    expect(response).toBe('54321 , 6697 : USERID : UNIX : testuser\r\n');
   });
 
   it('responds with NO-USER for unregistered entry', async () => {
-    const response = await query(TEST_PORT, '6697, 12345\r\n');
+    const response = await query(TEST_PORT, '12345, 6697\r\n');
 
     expect(response).toContain('ERROR : NO-USER');
   });
@@ -72,7 +72,7 @@ describe('IdentdServer', () => {
     server.register(54321, 6697, '127.0.0.1', 'testuser');
     server.unregister(54321, 6697, '127.0.0.1');
 
-    const response = await query(TEST_PORT, '6697, 54321\r\n');
+    const response = await query(TEST_PORT, '54321, 6697\r\n');
 
     expect(response).toContain('ERROR : NO-USER');
   });
@@ -80,7 +80,7 @@ describe('IdentdServer', () => {
   it('sanitizes usernames (strips colons, spaces, non-ASCII)', async () => {
     server.register(54321, 6697, '127.0.0.1', 'test:user name\u00ff');
 
-    const response = await query(TEST_PORT, '6697, 54321\r\n');
+    const response = await query(TEST_PORT, '54321, 6697\r\n');
 
     expect(response).toContain('USERID : UNIX : test_user_name');
     // Non-ASCII should be stripped
@@ -91,7 +91,7 @@ describe('IdentdServer', () => {
     const longName = 'a'.repeat(100);
     server.register(54321, 6697, '127.0.0.1', longName);
 
-    const response = await query(TEST_PORT, '6697, 54321\r\n');
+    const response = await query(TEST_PORT, '54321, 6697\r\n');
 
     expect(response).toContain('USERID : UNIX : ' + 'a'.repeat(64));
     expect(response).not.toContain('a'.repeat(65));
@@ -102,8 +102,8 @@ describe('IdentdServer', () => {
     server.register(22222, 6697, '127.0.0.1', 'user2');
 
     const [r1, r2] = await Promise.all([
-      query(TEST_PORT, '6697, 11111\r\n'),
-      query(TEST_PORT, '6697, 22222\r\n'),
+      query(TEST_PORT, '11111, 6697\r\n'),
+      query(TEST_PORT, '22222, 6697\r\n'),
     ]);
 
     expect(r1).toContain('user1');
@@ -116,7 +116,7 @@ describe('IdentdServer', () => {
     server.register(54321, 6697, '127.0.0.1', 'userB');
 
     // Query comes from 127.0.0.1, should get userB
-    const response = await query(TEST_PORT, '6697, 54321\r\n');
+    const response = await query(TEST_PORT, '54321, 6697\r\n');
 
     expect(response).toContain('userB');
   });
@@ -124,7 +124,7 @@ describe('IdentdServer', () => {
   it('handles query without trailing CRLF (just LF)', async () => {
     server.register(54321, 6697, '127.0.0.1', 'testuser');
 
-    const response = await query(TEST_PORT, '6697, 54321\n');
+    const response = await query(TEST_PORT, '54321, 6697\n');
 
     expect(response).toContain('USERID : UNIX : testuser');
   });
@@ -134,7 +134,7 @@ describe('IdentdServer', () => {
 
     const ended = await new Promise<boolean>((resolve, reject) => {
       const socket = net.connect({ port: TEST_PORT, host: '127.0.0.1' }, () => {
-        socket.write('6697, 54321\r\n');
+        socket.write('54321, 6697\r\n');
       });
 
       // Must consume data for 'end' to fire on readable streams
@@ -153,12 +153,12 @@ describe('IdentdServer', () => {
     await server.stop();
 
     // Server should be stopped — connection should fail
-    await expect(query(TEST_PORT, '6697, 54321\r\n')).rejects.toThrow();
+    await expect(query(TEST_PORT, '54321, 6697\r\n')).rejects.toThrow();
   });
 
   it('retries lookup after 500ms on miss (race condition mitigation)', async () => {
     // Don't register yet — let the first lookup miss
-    const responsePromise = query(TEST_PORT, '6697, 54321\r\n');
+    const responsePromise = query(TEST_PORT, '54321, 6697\r\n');
 
     // Register after a short delay (within the 500ms retry window)
     setTimeout(() => {
