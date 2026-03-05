@@ -89,7 +89,7 @@ export class IdentdServer {
   // Lifecycle
   // ==========================================================================
 
-  start(port: number, host = '0.0.0.0'): Promise<void> {
+  start(port: number, host = '::'): Promise<void> {
     return new Promise((resolve, reject) => {
       const server = net.createServer((socket) => {
         this.handleConnection(socket);

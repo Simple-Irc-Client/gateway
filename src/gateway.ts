@@ -339,9 +339,8 @@ export class Gateway {
       return;
     }
 
-    // Parse ident username from query param, fallback to IP-derived username
-    const identUsername = requestUrl.searchParams.get('ident')
-      ?? (clientIp.replace(/[^a-zA-Z0-9]/g, '').slice(0, 10) || 'webchat');
+    // Parse ident username from query param (may be null, resolved in handleNewClient)
+    const identUsername = requestUrl.searchParams.get('ident');
 
     // Accept the WebSocket connection
     this.webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
@@ -364,12 +363,15 @@ export class Gateway {
     webSocket: WebSocket,
     clientIp: string,
     serverConfig: { host: string; port: number; tls: boolean; encoding: string },
-    identUsername: string
+    identUsername: string | null
   ): void {
     const config = getConfig();
 
     // Generate unique client ID
     const clientId = `c${++clientIdCounter}`;
+
+    // Resolve ident username: use provided value or generate from client ID
+    const resolvedIdentUsername = identUsername ?? `simple_irc_client_webchat_${clientIdCounter}`;
 
     // Create client record
     const client: ConnectedClient = {
@@ -385,7 +387,7 @@ export class Gateway {
       registrationTimer: null,
       isRegistered: false,
       idleTimer: null,
-      identUsername,
+      identUsername: resolvedIdentUsername,
     };
 
     // Track the client
@@ -757,7 +759,7 @@ export class Gateway {
     // Start identd server if enabled
     if (config.identdEnabled) {
       this.identdServer = new IdentdServer(config.identdTimeout);
-      this.identdServer.start(config.identdPort, config.host).catch((error) => {
+      this.identdServer.start(config.identdPort).catch((error) => {
         logger.warn(`[identd] Failed to start: ${(error as Error).message}`);
         this.identdServer = null;
       });
