@@ -61,7 +61,7 @@ export interface Config {
   /** Interval in seconds for WebSocket ping/pong keepalive (default: 30) */
   wsPingInterval: number;
 
-  /** Timeout in seconds for WebSocket pong response before disconnecting (default: 10) */
+  /** Timeout in seconds for WebSocket pong response before disconnecting (default: 120) */
   wsPongTimeout: number;
 
   /** Timeout in seconds for client to send NICK/USER after connecting (default: 30, 0 = disabled) */
@@ -101,7 +101,7 @@ const DEFAULT_CONFIG: Config = {
   enforceTls: false,
   pongTimeout: 120,
   wsPingInterval: 30,
-  wsPongTimeout: 10,
+  wsPongTimeout: 120,
   registrationTimeout: 30,
   idleTimeout: 600,
   identdEnabled: false,

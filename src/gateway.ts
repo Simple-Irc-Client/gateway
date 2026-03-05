@@ -638,6 +638,9 @@ export class Gateway {
         return;
       }
 
+      // Skip ping if still waiting for a pong from the previous one
+      if (client.wsPongTimer !== null) return;
+
       client.webSocket.ping();
 
       client.wsPongTimer = setTimeout(() => {
