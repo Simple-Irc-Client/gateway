@@ -188,7 +188,7 @@ describe('IdentdServer', () => {
     const sockets: net.Socket[] = [];
     for (let i = 0; i < 50; i++) {
       const socket = net.connect({ port: TEST_PORT, host: '127.0.0.1' });
-      // Suppress errors from rejected sockets
+      // eslint-disable-next-line @typescript-eslint/no-empty-function
       socket.on('error', () => {});
       sockets.push(socket);
     }
