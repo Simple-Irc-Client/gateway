@@ -169,4 +169,47 @@ describe('IdentdServer', () => {
 
     expect(response).toContain('USERID : UNIX : lateuser');
   });
+
+  it('never returns USERID for a different remote host (IP-scoped lookup)', async () => {
+    // Register entry for a different host than the one querying (127.0.0.1)
+    server.register(54321, 6697, '10.0.0.1', 'secretuser');
+
+    const response = await query(TEST_PORT, '54321, 6697\r\n');
+
+    expect(response).toContain('ERROR : NO-USER');
+    expect(response).not.toContain('secretuser');
+  });
+
+  it('rejects connections over the concurrency limit', async () => {
+    // Register an entry so queries work
+    server.register(54321, 6697, '127.0.0.1', 'testuser');
+
+    // Open many connections without sending data to hold them open
+    const sockets: net.Socket[] = [];
+    for (let i = 0; i < 50; i++) {
+      const socket = net.connect({ port: TEST_PORT, host: '127.0.0.1' });
+      // Suppress errors from rejected sockets
+      socket.on('error', () => {});
+      sockets.push(socket);
+    }
+
+    // Wait for connections to establish
+    await new Promise((r) => setTimeout(r, 100));
+
+    // The 51st connection should be rejected (destroyed without response)
+    const rejected = await new Promise<boolean>((resolve) => {
+      const socket = net.connect({ port: TEST_PORT, host: '127.0.0.1' }, () => {
+        socket.write('54321, 6697\r\n');
+      });
+      socket.on('data', () => resolve(false));
+      socket.on('close', () => resolve(true));
+      socket.on('error', () => resolve(true));
+      setTimeout(() => resolve(false), 2000);
+    });
+
+    // Clean up held sockets
+    for (const s of sockets) s.destroy();
+
+    expect(rejected).toBe(true);
+  });
 });
