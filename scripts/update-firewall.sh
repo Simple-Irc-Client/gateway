@@ -57,67 +57,61 @@ fi
 
 echo "Got $V4_COUNT IPv4 and $V6_COUNT IPv6 CIDRs"
 
-# Build the rules JSON array
+# Write all GitHub Actions CIDRs to a temp file (one per line) for jq to consume
+CIDRS_FILE=$(mktemp)
+trap 'rm -f "$CIDRS_FILE"' EXIT
+{ echo "$CIDRS_V4"; echo "$CIDRS_V6"; } > "$CIDRS_FILE"
+
+# Build the entire rules JSON in a single jq invocation
 build_rules() {
-    local rules="[]"
-
-    # Allow any → port 113 (identd)
-    rules=$(echo "$rules" | jq '. + [{
-        "direction": "in",
-        "protocol": "tcp",
-        "port": "113",
-        "source_ips": ["0.0.0.0/0", "::/0"],
-        "description": "identd"
-    }]')
-
-    # Allow any → port 443 (HTTPS)
-    rules=$(echo "$rules" | jq '. + [{
-        "direction": "in",
-        "protocol": "tcp",
-        "port": "443",
-        "source_ips": ["0.0.0.0/0", "::/0"],
-        "description": "HTTPS"
-    }]')
-
-    # Allow admin SSH
-    rules=$(echo "$rules" | jq '. + [{
-        "direction": "in",
-        "protocol": "tcp",
-        "port": "22",
-        "source_ips": ["45.142.162.33/32"],
-        "description": "Admin SSH"
-    }]')
-
-    # Allow ICMP
-    rules=$(echo "$rules" | jq '. + [{
-        "direction": "in",
-        "protocol": "icmp",
-        "source_ips": ["0.0.0.0/0", "::/0"],
-        "description": "ICMP"
-    }]')
-
-    # GitHub Actions SSH — build source_ips array from all CIDRs
-    local gh_source_ips="[]"
-    while IFS= read -r cidr; do
-        gh_source_ips=$(echo "$gh_source_ips" | jq --arg c "$cidr" '. + [$c]')
-    done <<< "$CIDRS_V4"
-    while IFS= read -r cidr; do
-        gh_source_ips=$(echo "$gh_source_ips" | jq --arg c "$cidr" '. + [$c]')
-    done <<< "$CIDRS_V6"
-
-    rules=$(echo "$rules" | jq --argjson ips "$gh_source_ips" '. + [{
+    jq -Rn --slurpfile _ /dev/null '[inputs | select(length > 0)]' "$CIDRS_FILE" \
+    | jq '{
+        gh_ips: .,
+        rules: [
+            {
+                "direction": "in",
+                "protocol": "tcp",
+                "port": "113",
+                "source_ips": ["0.0.0.0/0", "::/0"],
+                "description": "identd"
+            },
+            {
+                "direction": "in",
+                "protocol": "tcp",
+                "port": "443",
+                "source_ips": ["0.0.0.0/0", "::/0"],
+                "description": "HTTPS"
+            },
+            {
+                "direction": "in",
+                "protocol": "tcp",
+                "port": "22",
+                "source_ips": ["45.142.162.33/32"],
+                "description": "Admin SSH"
+            },
+            {
+                "direction": "in",
+                "protocol": "icmp",
+                "source_ips": ["0.0.0.0/0", "::/0"],
+                "description": "ICMP"
+            }
+        ]
+    } | .rules + [{
         "direction": "in",
         "protocol": "tcp",
         "port": "22",
-        "source_ips": $ips,
+        "source_ips": .gh_ips,
         "description": "GitHub Actions SSH"
-    }]')
-
-    echo "$rules"
+    }]'
 }
 
 echo "Building firewall rules..."
-RULES=$(build_rules)
+RULES_FILE=$(mktemp)
+trap 'rm -f "$CIDRS_FILE" "$RULES_FILE"' EXIT
+build_rules > "$RULES_FILE"
+
+RULE_COUNT=$(jq length "$RULES_FILE")
+echo "Built $RULE_COUNT rules"
 
 # Find or create firewall
 echo "Looking up firewall '$HCLOUD_FIREWALL'..."
@@ -126,15 +120,19 @@ FIREWALL_ID=$(echo "$FIREWALLS" | jq -r '.firewalls[0].id // empty')
 
 if [ -z "$FIREWALL_ID" ]; then
     echo "Firewall not found, creating..."
-    CREATE_RESP=$(hcloud_api POST "/firewalls" \
-        -d "$(jq -n --arg name "$HCLOUD_FIREWALL" --argjson rules "$RULES" \
-            '{name: $name, rules: $rules}')")
+    BODY_FILE=$(mktemp)
+    jq -n --arg name "$HCLOUD_FIREWALL" --slurpfile rules "$RULES_FILE" \
+        '{name: $name, rules: $rules[0]}' > "$BODY_FILE"
+    CREATE_RESP=$(hcloud_api POST "/firewalls" -d @"$BODY_FILE")
+    rm -f "$BODY_FILE"
     FIREWALL_ID=$(echo "$CREATE_RESP" | jq -r '.firewall.id')
     echo "Created firewall ID: $FIREWALL_ID"
 else
     echo "Found firewall ID: $FIREWALL_ID, updating rules..."
-    hcloud_api POST "/firewalls/$FIREWALL_ID/actions/set_rules" \
-        -d "$(jq -n --argjson rules "$RULES" '{rules: $rules}')" >/dev/null
+    BODY_FILE=$(mktemp)
+    jq -n --slurpfile rules "$RULES_FILE" '{rules: $rules[0]}' > "$BODY_FILE"
+    hcloud_api POST "/firewalls/$FIREWALL_ID/actions/set_rules" -d @"$BODY_FILE" >/dev/null
+    rm -f "$BODY_FILE"
     echo "Rules updated"
 fi
 
@@ -163,5 +161,4 @@ else
     echo "Firewall already applied to server"
 fi
 
-RULE_COUNT=$(echo "$RULES" | jq length)
 echo "Firewall updated successfully with $RULE_COUNT rules ($V4_COUNT + $V6_COUNT GitHub Actions CIDRs)"
