@@ -583,6 +583,11 @@ export class Gateway {
         const direction = '>>';
         logger.info(`[${client.id}] ${direction} ${line}`);
 
+        // Hex dump Alis NOTICE lines for debugging channel list parsing
+        if (/^:Alis@/i.test(line)) {
+          logger.info(`[${client.id}] HEX ${Buffer.from(line).toString('hex')}`);
+        }
+
         // Reset idle timeout on meaningful server traffic (not PING/PONG)
         const command = line.startsWith(':')
           ? line.split(' ')[1]?.toUpperCase()
