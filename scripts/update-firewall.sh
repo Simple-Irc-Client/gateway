@@ -54,25 +54,35 @@ GITHUB_META=$(curl -sf --max-time 30 "$GITHUB_META_URL") || {
     exit 1
 }
 
-CIDRS_V4=$(echo "$GITHUB_META" | jq -r '.actions[] | select(contains(":") | not)')
-CIDRS_V6=$(echo "$GITHUB_META" | jq -r '.actions[] | select(contains(":"))')
-V4_COUNT=$(echo "$CIDRS_V4" | wc -l)
-V6_COUNT=$(echo "$CIDRS_V6" | wc -l)
-
-if [ -z "$CIDRS_V4" ]; then
-    echo "ERROR: Got empty GitHub Actions IPv4 ranges" >&2
-    exit 1
-fi
-
-echo "Got $V4_COUNT IPv4 and $V6_COUNT IPv6 CIDRs"
-
-# Write all GitHub Actions CIDRs to a temp file (one per line) for jq to consume
+# Aggregate overlapping/adjacent CIDRs using Python's ipaddress module to reduce
+# the number of entries. Hetzner limits: 100 source_ips per rule, 50 effective rules.
 CIDRS_FILE=$(mktemp)
 trap 'rm -f "$CIDRS_FILE"' EXIT
-{ echo "$CIDRS_V4"; echo "$CIDRS_V6"; } > "$CIDRS_FILE"
 
-# Hetzner Cloud Firewall limits: 100 source_ips per rule, 500 rules per firewall.
-# GitHub Actions has ~6000 CIDRs, so we split them into chunks of 100.
+echo "$GITHUB_META" | python3 -c "
+import sys, json, ipaddress
+
+data = json.load(sys.stdin)
+cidrs = data.get('actions', [])
+if not cidrs:
+    print('ERROR: No GitHub Actions CIDRs found', file=sys.stderr)
+    sys.exit(1)
+
+v4 = sorted(set(ipaddress.ip_network(c) for c in cidrs if ':' not in c))
+v6 = sorted(set(ipaddress.ip_network(c) for c in cidrs if ':' in c))
+
+v4_agg = list(ipaddress.collapse_addresses(v4))
+v6_agg = list(ipaddress.collapse_addresses(v6))
+
+print(f'IPv4: {len(v4)} -> {len(v4_agg)}, IPv6: {len(v6)} -> {len(v6_agg)}', file=sys.stderr)
+
+for net in v4_agg + v6_agg:
+    print(net)
+" > "$CIDRS_FILE" || exit 1
+
+CIDR_COUNT=$(wc -l < "$CIDRS_FILE")
+echo "Aggregated to $CIDR_COUNT CIDRs"
+
 MAX_SOURCE_IPS=100
 
 # Build the entire rules JSON in a single jq invocation
@@ -182,4 +192,4 @@ else
     echo "Firewall already applied to server"
 fi
 
-echo "Firewall updated successfully with $RULE_COUNT rules ($V4_COUNT + $V6_COUNT GitHub Actions CIDRs)"
+echo "Firewall updated successfully with $RULE_COUNT rules ($CIDR_COUNT aggregated CIDRs)"
