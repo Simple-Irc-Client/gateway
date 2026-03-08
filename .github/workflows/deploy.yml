@@ -129,3 +129,71 @@ jobs:
             exit 1
           }
           echo "Service is running"
+
+      - name: Update Hetzner Cloud Firewall
+        env:
+          HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+          HCLOUD_FIREWALL: ${{ secrets.HCLOUD_FIREWALL }}
+          HCLOUD_SERVER: ${{ secrets.HCLOUD_SERVER }}
+        run: bash scripts/update-firewall.sh
+
+      - name: Deploy firewall cronjob
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+          HCLOUD_FIREWALL: ${{ secrets.HCLOUD_FIREWALL }}
+          HCLOUD_SERVER: ${{ secrets.HCLOUD_SERVER }}
+        run: |
+          echo "Deploying firewall script..."
+          scp scripts/update-firewall.sh root@$SSH_HOST:/opt/sic-gateway/update-firewall.sh
+          ssh root@$SSH_HOST "chmod +x /opt/sic-gateway/update-firewall.sh"
+          echo "Firewall script deployed"
+
+          echo "Setting up firewall cronjob..."
+          CRON_CMD="0 */6 * * * HCLOUD_TOKEN=$HCLOUD_TOKEN HCLOUD_FIREWALL=$HCLOUD_FIREWALL HCLOUD_SERVER=$HCLOUD_SERVER /opt/sic-gateway/update-firewall.sh >> /var/log/update-firewall.log 2>&1"
+          ssh root@$SSH_HOST "crontab -l 2>/dev/null | grep -v 'update-firewall' | { cat; echo '$CRON_CMD'; } | crontab -"
+          echo "Cronjob configured"
+
+      - name: Verify firewall setup
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+          HCLOUD_FIREWALL: ${{ secrets.HCLOUD_FIREWALL }}
+        run: |
+          ssh root@$SSH_HOST "crontab -l" | grep -q "update-firewall" || {
+            echo "ERROR: Firewall cronjob is missing"
+            exit 1
+          }
+          echo "Firewall cronjob verified"
+
+          RULES=$(curl -sf -H "Authorization: Bearer $HCLOUD_TOKEN" \
+            "https://api.hetzner.cloud/v1/firewalls?name=$HCLOUD_FIREWALL" \
+            | jq '.firewalls[0].rules')
+
+          echo "$RULES" | jq -e '.[] | select(.description == "identd")' >/dev/null || {
+            echo "ERROR: Missing identd rule"; exit 1
+          }
+          echo "identd rule verified"
+
+          echo "$RULES" | jq -e '.[] | select(.description == "HTTPS")' >/dev/null || {
+            echo "ERROR: Missing HTTPS rule"; exit 1
+          }
+          echo "HTTPS rule verified"
+
+          echo "$RULES" | jq -e '.[] | select(.description == "Admin SSH")' >/dev/null || {
+            echo "ERROR: Missing Admin SSH rule"; exit 1
+          }
+          echo "Admin SSH rule verified"
+
+          echo "$RULES" | jq -e '.[] | select(.description == "ICMP")' >/dev/null || {
+            echo "ERROR: Missing ICMP rule"; exit 1
+          }
+          echo "ICMP rule verified"
+
+          echo "$RULES" | jq -e '.[] | select(.description == "GitHub Actions SSH")' >/dev/null || {
+            echo "ERROR: Missing GitHub Actions SSH rule"; exit 1
+          }
+          echo "GitHub Actions SSH rule verified"
+
+          RULE_COUNT=$(echo "$RULES" | jq length)
+          echo "All $RULE_COUNT firewall rules verified"
