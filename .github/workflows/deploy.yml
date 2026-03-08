@@ -88,8 +88,8 @@ jobs:
           Environment=HOST=0.0.0.0
           Environment=PATH_PREFIX=/webirc
           Environment=ALLOWED_ORIGINS=https://app.simpleircclient.com
-          Environment=IDENTD_ENABLED=true                                                                                                                                                                                                                                                                             
-          Environment=IDENTD_PORT=113                                                                                                                                                                                                                                                                                 
+          Environment=IDENTD_ENABLED=true
+          Environment=IDENTD_PORT=113
           AmbientCapabilities=CAP_NET_BIND_SERVICE
 
           [Install]
@@ -130,28 +130,26 @@ jobs:
           }
           echo "Service is running"
 
-      - name: Update Hetzner Cloud Firewall
-        env:
-          HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
-          HCLOUD_FIREWALL: ${{ secrets.HCLOUD_FIREWALL }}
-          HCLOUD_SERVER: ${{ secrets.HCLOUD_SERVER }}
-        run: bash scripts/update-firewall.sh
-
-      - name: Deploy firewall cronjob
+      - name: Deploy firewall script and cronjob
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
           HCLOUD_FIREWALL: ${{ secrets.HCLOUD_FIREWALL }}
-          HCLOUD_SERVER: ${{ secrets.HCLOUD_SERVER }}
         run: |
           echo "Deploying firewall script..."
           scp scripts/update-firewall.sh root@$SSH_HOST:/opt/sic-gateway/update-firewall.sh
           ssh root@$SSH_HOST "chmod +x /opt/sic-gateway/update-firewall.sh"
           echo "Firewall script deployed"
 
+          echo "Running firewall update..."
+          ssh root@$SSH_HOST "HCLOUD_TOKEN='$HCLOUD_TOKEN' HCLOUD_FIREWALL='$HCLOUD_FIREWALL' /opt/sic-gateway/update-firewall.sh"
+          echo "Firewall updated"
+
           echo "Setting up firewall cronjob..."
-          CRON_CMD="0 */6 * * * HCLOUD_TOKEN=$HCLOUD_TOKEN HCLOUD_FIREWALL=$HCLOUD_FIREWALL HCLOUD_SERVER=$HCLOUD_SERVER /opt/sic-gateway/update-firewall.sh >> /var/log/update-firewall.log 2>&1"
-          ssh root@$SSH_HOST "crontab -l 2>/dev/null | grep -v 'update-firewall' | { cat; echo '$CRON_CMD'; } | crontab -"
+          ssh root@$SSH_HOST "
+            CRON_CMD=\"0 */6 * * * HCLOUD_TOKEN='$HCLOUD_TOKEN' HCLOUD_FIREWALL='$HCLOUD_FIREWALL' /opt/sic-gateway/update-firewall.sh >> /var/log/update-firewall.log 2>&1\"
+            crontab -l 2>/dev/null | grep -v 'update-firewall' | { cat; echo \"\$CRON_CMD\"; } | crontab -
+          "
           echo "Cronjob configured"
 
       - name: Verify firewall setup
@@ -165,6 +163,12 @@ jobs:
             exit 1
           }
           echo "Firewall cronjob verified"
+
+          ssh root@$SSH_HOST "nft list table inet sic-firewall" >/dev/null || {
+            echo "ERROR: nftables sic-firewall table missing"
+            exit 1
+          }
+          echo "nftables SSH rules verified"
 
           RULES=$(curl -sf -H "Authorization: Bearer $HCLOUD_TOKEN" \
             "https://api.hetzner.cloud/v1/firewalls?name=$HCLOUD_FIREWALL" \
@@ -180,21 +184,13 @@ jobs:
           }
           echo "HTTPS rule verified"
 
-          echo "$RULES" | jq -e '.[] | select(.description == "Admin SSH")' >/dev/null || {
-            echo "ERROR: Missing Admin SSH rule"; exit 1
-          }
-          echo "Admin SSH rule verified"
-
           echo "$RULES" | jq -e '.[] | select(.description == "ICMP")' >/dev/null || {
             echo "ERROR: Missing ICMP rule"; exit 1
           }
           echo "ICMP rule verified"
 
-          GH_RULE_COUNT=$(echo "$RULES" | jq '[.[] | select(.description | startswith("GitHub Actions SSH"))] | length')
-          if [ "$GH_RULE_COUNT" -eq 0 ]; then
-            echo "ERROR: Missing GitHub Actions SSH rules"; exit 1
-          fi
-          echo "GitHub Actions SSH rules verified ($GH_RULE_COUNT chunks)"
+          SSH_RULE_COUNT=$(echo "$RULES" | jq '[.[] | select(.port == "22")] | length')
+          echo "Hetzner firewall has $SSH_RULE_COUNT SSH rule(s) (admin IPs)"
 
           RULE_COUNT=$(echo "$RULES" | jq length)
-          echo "All $RULE_COUNT firewall rules verified"
+          echo "All $RULE_COUNT Hetzner firewall rules verified"
