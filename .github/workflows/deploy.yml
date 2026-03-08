@@ -22,7 +22,7 @@ jobs:
           npm run test
           npm run build
 
-      - name: Deploy via SSH
+      - name: Setup SSH
         env:
           SSH_KEY: ${{ secrets.SSH_KEY }}
           SSH_HOST: ${{ secrets.SSH_HOST }}
@@ -36,13 +36,11 @@ jobs:
           mkdir -p ~/.ssh
           echo "$SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          echo "SSH key written"
-
           ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
-          echo "Host key scanned"
 
           eval "$(ssh-agent -s)"
-          echo "SSH agent started"
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
 
           ASKPASS_SCRIPT=$(mktemp)
           echo '#!/bin/sh' > "$ASKPASS_SCRIPT"
@@ -52,6 +50,10 @@ jobs:
           rm -f "$ASKPASS_SCRIPT"
           echo "SSH key added to agent"
 
+      - name: Deploy application
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        run: |
           ssh root@$SSH_HOST 'if ! command -v caddy &> /dev/null; then
             echo "Caddy not found, installing..."
             apt-get update
