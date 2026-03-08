@@ -26,16 +26,25 @@ GITHUB_META_URL="https://api.github.com/meta"
 hcloud_api() {
     local method="$1" endpoint="$2"
     shift 2
-    local response
-    response=$(curl -sf --max-time 30 \
+    local response http_code body_file
+    body_file=$(mktemp)
+    http_code=$(curl -s --max-time 30 -o "$body_file" -w '%{http_code}' \
         -X "$method" \
         -H "Authorization: Bearer $HCLOUD_TOKEN" \
         -H "Content-Type: application/json" \
         "${HCLOUD_API}${endpoint}" \
         "$@") || {
-        echo "ERROR: Hetzner API request failed: $method $endpoint" >&2
+        echo "ERROR: Hetzner API request failed: $method $endpoint (curl error)" >&2
+        rm -f "$body_file"
         exit 1
     }
+    response=$(cat "$body_file")
+    rm -f "$body_file"
+    if [ "$http_code" -ge 400 ]; then
+        echo "ERROR: Hetzner API $method $endpoint returned HTTP $http_code:" >&2
+        echo "$response" | jq . 2>/dev/null || echo "$response" >&2
+        exit 1
+    fi
     echo "$response"
 }
 
