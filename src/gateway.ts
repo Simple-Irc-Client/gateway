@@ -581,12 +581,7 @@ export class Gateway {
     ircClient.on('raw', (line: string, isFromServer: boolean) => {
       if (isFromServer) {
         const direction = '>>';
-        logger.info(`[${client.id}] ${direction} ${line}`);
-
-        // Hex dump Alis NOTICE lines for debugging channel list parsing
-        if (/^:Alis@/i.test(line)) {
-          logger.info(`[${client.id}] HEX ${Buffer.from(line).toString('hex')}`);
-        }
+        logger.debug(`[${client.id}] ${direction} ${line}`);
 
         // Reset idle timeout on meaningful server traffic (not PING/PONG)
         const command = line.startsWith(':')
@@ -600,7 +595,7 @@ export class Gateway {
         this.sendRawToClient(client.webSocket, line);
       } else {
         const direction = '<<';
-        logger.info(`[${client.id}] ${direction} ${line}`);
+        logger.debug(`[${client.id}] ${direction} ${line}`);
       }
     });
 
