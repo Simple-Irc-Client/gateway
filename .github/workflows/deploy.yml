@@ -190,10 +190,11 @@ jobs:
           }
           echo "ICMP rule verified"
 
-          echo "$RULES" | jq -e '.[] | select(.description == "GitHub Actions SSH")' >/dev/null || {
-            echo "ERROR: Missing GitHub Actions SSH rule"; exit 1
-          }
-          echo "GitHub Actions SSH rule verified"
+          GH_RULE_COUNT=$(echo "$RULES" | jq '[.[] | select(.description | startswith("GitHub Actions SSH"))] | length')
+          if [ "$GH_RULE_COUNT" -eq 0 ]; then
+            echo "ERROR: Missing GitHub Actions SSH rules"; exit 1
+          fi
+          echo "GitHub Actions SSH rules verified ($GH_RULE_COUNT chunks)"
 
           RULE_COUNT=$(echo "$RULES" | jq length)
           echo "All $RULE_COUNT firewall rules verified"

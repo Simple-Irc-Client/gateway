@@ -71,12 +71,18 @@ CIDRS_FILE=$(mktemp)
 trap 'rm -f "$CIDRS_FILE"' EXIT
 { echo "$CIDRS_V4"; echo "$CIDRS_V6"; } > "$CIDRS_FILE"
 
+# Hetzner Cloud Firewall limits: 100 source_ips per rule, 500 rules per firewall.
+# GitHub Actions has ~6000 CIDRs, so we split them into chunks of 100.
+MAX_SOURCE_IPS=100
+
 # Build the entire rules JSON in a single jq invocation
 build_rules() {
-    jq -Rn --slurpfile _ /dev/null '[inputs | select(length > 0)]' "$CIDRS_FILE" \
-    | jq '{
-        gh_ips: .,
-        rules: [
+    jq -Rn --argjson max "$MAX_SOURCE_IPS" '
+        # Read all CIDRs from the file
+        [inputs | select(length > 0)] as $all_ips |
+
+        # Static rules
+        [
             {
                 "direction": "in",
                 "protocol": "tcp",
@@ -104,14 +110,20 @@ build_rules() {
                 "source_ips": ["0.0.0.0/0", "::/0"],
                 "description": "ICMP"
             }
+        ] +
+
+        # Split GitHub Actions CIDRs into chunks of $max
+        [
+            range(0; ($all_ips | length); $max) as $i |
+            {
+                "direction": "in",
+                "protocol": "tcp",
+                "port": "22",
+                "source_ips": $all_ips[$i:$i + $max],
+                "description": "GitHub Actions SSH \($i / $max + 1 | floor)"
+            }
         ]
-    } | .rules + [{
-        "direction": "in",
-        "protocol": "tcp",
-        "port": "22",
-        "source_ips": .gh_ips,
-        "description": "GitHub Actions SSH"
-    }]'
+    ' "$CIDRS_FILE"
 }
 
 echo "Building firewall rules..."
