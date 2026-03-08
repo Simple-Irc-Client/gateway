@@ -42,7 +42,7 @@ hcloud_api() {
     rm -f "$body_file"
     if [ "$http_code" -ge 400 ]; then
         echo "ERROR: Hetzner API $method $endpoint returned HTTP $http_code:" >&2
-        echo "$response" | jq . 2>/dev/null || echo "$response" >&2
+        echo "$response" >&2
         exit 1
     fi
     echo "$response"
