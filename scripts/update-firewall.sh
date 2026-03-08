@@ -197,9 +197,13 @@ echo "Total SSH allow list: $V4_COUNT IPv4, $V6_COUNT IPv6 entries"
 NFT_RULES_FILE=$(mktemp)
 trap 'rm -f "$CIDRS_FILE" "$NFT_RULES_FILE"' EXIT
 
-cat > "$NFT_RULES_FILE" << EOF
-flush table $NFT_TABLE
+if nft list table $NFT_TABLE >/dev/null 2>&1; then
+    echo "delete table $NFT_TABLE" > "$NFT_RULES_FILE"
+else
+    : > "$NFT_RULES_FILE"
+fi
 
+cat >> "$NFT_RULES_FILE" << EOF
 table $NFT_TABLE {
     set $NFT_SET_V4 {
         type ipv4_addr
