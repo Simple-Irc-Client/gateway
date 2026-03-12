@@ -110,9 +110,15 @@ STATIC_RULES=$(echo "$EXISTING_RULES" | jq '
     ] + $ssh_rules
 ')
 
-# Check if rules need updating (avoid unnecessary API calls)
+# Check if rules need updating (avoid unnecessary API calls).
+# Normalize both sides to canonical fields only before comparing, since the
+# Hetzner API returns extra fields (e.g. "port": null for ICMP) that would
+# cause a spurious mismatch against our hand-constructed target rules.
 NEEDS_UPDATE=$(jq -n --argjson existing "$EXISTING_RULES" --argjson target "$STATIC_RULES" '
-    ($existing | sort_by(.description)) != ($target | sort_by(.description))
+    def normalize:
+        [.[] | {direction, protocol, port, source_ips: (.source_ips | sort), description}]
+        | sort_by([.description, .protocol, .port]);
+    (($existing | normalize) != ($target | normalize))
 ')
 
 if [ "$NEEDS_UPDATE" = "true" ]; then
