@@ -8,7 +8,6 @@
 
 import { Gateway } from './gateway.js';
 import { loadConfig, type Config } from './config.js';
-import * as logger from './logger.js';
 
 // ============================================================================
 // Exports
@@ -78,8 +77,8 @@ function parseIntOrUndefined(value: string | undefined): number | undefined {
   if (value === undefined) {
     return undefined;
   }
-  const parsed = parseInt(value, 10);
-  return isNaN(parsed) ? undefined : parsed;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isNaN(parsed) ? undefined : parsed;
 }
 
 /**
@@ -97,7 +96,7 @@ function parseAllowedServers(value: string | undefined): string[] | undefined {
  */
 function setupShutdownHandlers(gateway: Gateway): void {
   const handleShutdown = (): void => {
-    logger.info('Received shutdown signal...');
+    console.info('Received shutdown signal...');
     gateway.stop();
     process.exit(0);
   };

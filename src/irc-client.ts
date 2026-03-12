@@ -9,104 +9,25 @@
  * - Automatic PING/PONG keepalive
  */
 
-import { EventEmitter } from 'node:events';
 import * as net from 'node:net';
 import * as tls from 'node:tls';
 import iconv from 'iconv-lite';
-
-// ============================================================================
-// Types
-// ============================================================================
-
-/**
- * Base socket connection options
- */
-interface SocketConnectionOptions {
-  /** IRC server hostname */
-  host: string;
-  /** IRC server port */
-  port: number;
-  /** Whether to use TLS encryption */
-  tls?: boolean;
-  /** Character encoding for messages (defaults to utf8) */
-  encoding?: string;
-  /** WEBIRC configuration for passing real client IP to server */
-  webirc?: WebircConfig;
-  /** Timeout in seconds for server to respond after PING (default: 120) */
-  pongTimeout?: number;
-}
-
-/**
- * Options for connecting to an IRC server
- */
-export interface IrcConnectionOptions extends SocketConnectionOptions {
-  /** Nickname to use */
-  nick: string;
-  /** Username (defaults to nick if not provided) */
-  username?: string;
-  /** Real name shown in WHOIS (defaults to nick if not provided) */
-  realname?: string;
-  /** Server password (sent with PASS command) */
-  password?: string;
-}
-
-/**
- * Options for raw connection (client handles registration)
- */
-export type IrcRawConnectionOptions = SocketConnectionOptions;
-
-/**
- * WEBIRC configuration for identifying real client IPs to IRC servers
- *
- * WEBIRC is a protocol extension that allows gateways to pass the real
- * client's IP address to the IRC server, which is used for bans, hostname
- * display, etc.
- */
-export interface WebircConfig {
-  /** WEBIRC password (must match server configuration) */
-  password: string;
-  /** Gateway identifier name */
-  gateway: string;
-  /** Hostname to report for the client */
-  hostname: string;
-  /** IP address to report for the client */
-  ip: string;
-}
-
-// ============================================================================
-// Constants
-// ============================================================================
-
-/** IRC line terminator */
-const IRC_LINE_ENDING = '\r\n';
-
-/** Strip CR/LF from user-supplied values to prevent IRC protocol injection */
-const stripCRLF = (input: string): string => input.replace(/[\r\n]/g, '');
-
-/** Interval for sending PING keepalive messages (30 seconds) */
-const PING_INTERVAL_MS = 30000;
-
-/** Timeout for TCP/TLS connection establishment (30 seconds) */
-const CONNECTION_TIMEOUT_MS = 30000;
-
-/** Default timeout for receiving server response after sending PING (120 seconds) */
-const DEFAULT_PONG_TIMEOUT_MS = 120000;
-
-/** Maximum receive buffer size before dropping the connection (2MB) */
-const MAX_RECEIVE_BUFFER_SIZE = 2 * 1024 * 1024;
-
-/**
- * Pattern to match RPL_WELCOME (001) from a server
- *
- * Format: [:server.name 001 nickname :Welcome message]
- * Or with IRCv3 tags: [@time=... :server.name 001 nickname :Welcome message]
- *
- * - Optional IRCv3 message tags (@key=value;... ) at the start
- * - Server prefix starting with :
- * - Source must not contain ! or @ (those indicate a user hostmask)
- * - Command must be exactly 001
- */
-const RPL_WELCOME_PATTERN = /^(@\S+ )?:[^\s!@]+ 001 /;
+import {
+  BaseIrcClient,
+  SocketConnectionOptions,
+  IrcConnectionOptions,
+  IrcRawConnectionOptions,
+  WebircConfig
+} from './irc-types.js';
+import {
+  IRC_LINE_ENDING,
+  stripCRLF,
+  PING_INTERVAL_MS,
+  CONNECTION_TIMEOUT_MS,
+  DEFAULT_PONG_TIMEOUT_MS,
+  MAX_RECEIVE_BUFFER_SIZE,
+  RPL_WELCOME_PATTERN
+} from './constants.js';
 
 // ============================================================================
 // IRC Client Class
@@ -128,7 +49,7 @@ const RPL_WELCOME_PATTERN = /^(@\S+ )?:[^\s!@]+ 001 /;
  * - 'error': Connection error occurred
  * - 'raw': Raw IRC message (line: string, isFromServer: boolean)
  */
-export class IrcClient extends EventEmitter {
+export class IrcClient extends BaseIrcClient {
   /** TCP or TLS socket connection */
   private socket: net.Socket | tls.TLSSocket | null = null;
 

@@ -13,7 +13,7 @@
  */
 
 import * as net from 'node:net';
-import * as logger from './logger.js';
+
 
 // ============================================================================
 // Types
@@ -84,13 +84,13 @@ export class IdentdServer {
     const key = this.makeKey(localPort, remotePort, remoteHost);
     const sanitized = sanitizeUsername(username);
     this.entries.set(key, { username: sanitized, createdAt: Date.now() });
-    logger.info(`[identd] Registered ${key} → ${sanitized}`);
+    console.info(`[identd] Registered ${key} → ${sanitized}`);
   }
 
   unregister(localPort: number, remotePort: number, remoteHost: string): void {
     const key = this.makeKey(localPort, remotePort, remoteHost);
     this.entries.delete(key);
-    logger.info(`[identd] Unregistered ${key}`);
+    console.info(`[identd] Unregistered ${key}`);
   }
 
   // ==========================================================================
@@ -104,14 +104,14 @@ export class IdentdServer {
       });
 
       server.on('error', (error) => {
-        logger.warn(`[identd] Server error: ${error.message}`);
+        console.warn(`[identd] Server error: ${error.message}`);
         reject(error);
       });
 
       server.listen(port, host, () => {
         this.server = server;
         this.entryExpiryTimer = setInterval(() => this.expireEntries(), ENTRY_TTL_MS);
-        logger.success(`[identd] Listening on ${host}:${port}`);
+        console.log(`[identd] Listening on ${host}:${port}`);
         resolve();
       });
     });
@@ -131,7 +131,7 @@ export class IdentdServer {
         this.server = null;
         this.entries.clear();
         this.activeConnections = 0;
-        logger.info('[identd] Stopped');
+        console.info('[identd] Stopped');
         resolve();
       });
     });
@@ -220,10 +220,10 @@ export class IdentdServer {
     setTimeout(() => {
       const retryUsername = this.lookup(localPort, remotePort, normalizedRemote);
       if (retryUsername) {
-        logger.info(`[identd] USER for ${this.makeKey(localPort, remotePort, normalizedRemote)}`);
+        console.info(`[identd] USER for ${this.makeKey(localPort, remotePort, normalizedRemote)}`);
         this.respond(socket, portPair, `USERID : UNIX : ${retryUsername}`);
       } else {
-        logger.info(`[identd] NO-USER for ${this.makeKey(localPort, remotePort, normalizedRemote)}`);
+        console.info(`[identd] NO-USER for ${this.makeKey(localPort, remotePort, normalizedRemote)}`);
         this.respond(socket, portPair, 'ERROR : NO-USER');
       }
     }, RETRY_DELAY_MS);
@@ -245,7 +245,7 @@ export class IdentdServer {
     for (const [key, entry] of this.entries) {
       if (now - entry.createdAt > ENTRY_TTL_MS) {
         this.entries.delete(key);
-        logger.info(`[identd] Expired stale entry ${key}`);
+        console.info(`[identd] Expired stale entry ${key}`);
       }
     }
   }
