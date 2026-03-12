@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { IrcClient } from '../irc-client.js';
-import { createServer, Server } from 'net';
+import { IrcClient } from './irc-client.js';
+import { createServer, Server } from 'node:net';
 
 describe('IrcClient', () => {
   let client: IrcClient;

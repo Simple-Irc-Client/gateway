@@ -12,7 +12,7 @@
  *   Error:    "serverPort, clientPort : ERROR : NO-USER\r\n"
  */
 
-import * as net from 'net';
+import * as net from 'node:net';
 import * as logger from './logger.js';
 
 // ============================================================================
@@ -199,8 +199,8 @@ export class IdentdServer {
     // RFC 1413: query is "portOnServer, portOnClient"
     // portOnServer = our local port (gateway's ephemeral port to IRC)
     // portOnClient = the IRC server's port (remote port from our perspective)
-    const localPort = parseInt(parts[0], 10);
-    const remotePort = parseInt(parts[1], 10);
+    const localPort = Number.parseInt(parts[0], 10);
+    const remotePort = Number.parseInt(parts[1], 10);
 
     if (!this.isValidPort(localPort) || !this.isValidPort(remotePort)) {
       this.respond(socket, `${parts[0]} , ${parts[1]}`, 'ERROR : INVALID-PORT');

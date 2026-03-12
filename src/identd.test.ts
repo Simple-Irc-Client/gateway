@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { IdentdServer } from '../identd.js';
-import * as net from 'net';
+import { IdentdServer } from './identd.js';
+import * as net from 'node:net';
 
 const TEST_PORT = 11113;
 

@@ -9,9 +9,9 @@
  * - Automatic PING/PONG keepalive
  */
 
-import { EventEmitter } from 'events';
-import * as net from 'net';
-import * as tls from 'tls';
+import { EventEmitter } from 'node:events';
+import * as net from 'node:net';
+import * as tls from 'node:tls';
 import iconv from 'iconv-lite';
 
 // ============================================================================

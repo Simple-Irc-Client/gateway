@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { Gateway } from '../gateway.js';
-import { loadConfig } from '../config.js';
-import { IrcClient } from '../irc-client.js';
+import { Gateway } from './gateway.js';
+import { loadConfig } from './config.js';
+import { IrcClient } from './irc-client.js';
 import WebSocket from 'ws';
-import { createServer as createTcpServer, type Server as TcpServer } from 'net';
+import { createServer as createTcpServer, type Server as TcpServer } from 'node:net';
 
 describe('Gateway', () => {
   let gateway: Gateway;

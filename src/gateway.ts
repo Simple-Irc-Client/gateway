@@ -20,8 +20,8 @@
  */
 
 import { WebSocketServer, WebSocket } from 'ws';
-import type { Duplex } from 'stream';
-import { createServer, type IncomingMessage } from 'http';
+import type { Duplex } from 'node:stream';
+import { createServer, type IncomingMessage } from 'node:http';
 import { getConfig } from './config.js';
 import { IrcClient } from './irc-client.js';
 import { IdentdServer } from './identd.js';
@@ -100,8 +100,8 @@ function isPrivateHost(host: string): boolean {
     if (ipv6.startsWith('0000:0000:0000:0000:0000:ffff:')) {
       const lastTwo = ipv6.slice(30).split(':');
       if (lastTwo.length === 2) {
-        const hi = parseInt(lastTwo[0], 16);
-        const lo = parseInt(lastTwo[1], 16);
+        const hi = Number.parseInt(lastTwo[0], 16);
+        const lo = Number.parseInt(lastTwo[1], 16);
         const mappedIp = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
         return isPrivateHost(mappedIp);
       }
@@ -111,8 +111,8 @@ function isPrivateHost(host: string): boolean {
     if (ipv6.startsWith('0000:0000:0000:0000:0000:0000:')) {
       const lastTwo = ipv6.slice(30).split(':');
       if (lastTwo.length === 2) {
-        const hi = parseInt(lastTwo[0], 16);
-        const lo = parseInt(lastTwo[1], 16);
+        const hi = Number.parseInt(lastTwo[0], 16);
+        const lo = Number.parseInt(lastTwo[1], 16);
         const mappedIp = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
         return isPrivateHost(mappedIp);
       }
@@ -294,7 +294,7 @@ export class Gateway {
     // Parse server configuration from query parameters
     const host = requestUrl.searchParams.get('host');
     const portStr = requestUrl.searchParams.get('port');
-    const port = portStr ? parseInt(portStr, 10) : null;
+    const port = portStr ? Number.parseInt(portStr, 10) : null;
     const tls = requestUrl.searchParams.get('tls') === 'true';
     const encodingParam = requestUrl.searchParams.get('encoding') ?? 'utf8';
     const encoding = ALLOWED_ENCODINGS.has(encodingParam.toLowerCase()) ? encodingParam : 'utf8';
@@ -306,7 +306,7 @@ export class Gateway {
     }
 
     // Validate required parameters
-    if (!host || !port || isNaN(port) || port < 1 || port > 65535) {
+    if (!host || !port || Number.isNaN(port) || port < 1 || port > 65535) {
       this.rejectConnection(socket, 400, 'Bad Request - Missing or invalid host/port');
       return;
     }
