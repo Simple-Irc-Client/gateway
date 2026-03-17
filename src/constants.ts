@@ -49,6 +49,17 @@ export const MAX_RECEIVE_BUFFER_SIZE = 2 * 1024 * 1024;
  */
 export const RPL_WELCOME_PATTERN = /^(@\S+ )?:[^\s!@]+ 001 /;
 
+/**
+ * Matches a CAP LS line from the server (with or without server prefix).
+ * Captures an optional continuation marker (* after LS) in group 1.
+ * Formats:
+ *   CAP * LS * :caps...          (no server prefix, continuation)
+ *   CAP * LS :caps...            (no server prefix, final)
+ *   :server CAP nick LS * :caps  (with server prefix, continuation)
+ *   :server CAP nick LS :caps    (with server prefix, final)
+ */
+export const CAP_LS_PATTERN = /(?:^|\s)CAP \S+ LS(\s\*)?/;
+
 // ============================================================================
 // Character Encodings
 // ============================================================================

@@ -54,6 +54,41 @@ describe('IrcClient', () => {
     expect(allData).toContain('USER testnick');
   });
 
+  it('sends CAP END after receiving final CAP LS response', async () => {
+    const received: string[] = [];
+
+    server.once('connection', (socket) => {
+      socket.on('data', (d) => received.push(d.toString()));
+      // Send CAP LS response after client connects
+      setTimeout(() => socket.write(':ergo.test CAP * LS :batch chathistory\r\n'), 30);
+    });
+
+    client.connect({ host: '127.0.0.1', port: serverPort, nick: 'testnick' });
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(received.join('')).toContain('CAP END');
+  });
+
+  it('sends CAP END only after final line of multiline CAP LS', async () => {
+    const received: string[] = [];
+
+    server.once('connection', (socket) => {
+      socket.on('data', (d) => received.push(d.toString()));
+      setTimeout(() => {
+        socket.write(':ergo.test CAP * LS * :batch chathistory\r\n');
+        socket.write(':ergo.test CAP * LS :message-tags\r\n');
+      }, 30);
+    });
+
+    client.connect({ host: '127.0.0.1', port: serverPort, nick: 'testnick' });
+    await new Promise((r) => setTimeout(r, 100));
+
+    const allData = received.join('');
+    expect(allData).toContain('CAP END');
+    // Only sent once
+    expect(allData.split('CAP END').length - 1).toBe(1);
+  });
+
   it('sends PASS when password provided', async () => {
     client.connect({ host: '127.0.0.1', port: serverPort, nick: 'testnick', password: 'secret' });
 

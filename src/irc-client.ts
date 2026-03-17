@@ -26,7 +26,8 @@ import {
   CONNECTION_TIMEOUT_MS,
   DEFAULT_PONG_TIMEOUT_MS,
   MAX_RECEIVE_BUFFER_SIZE,
-  RPL_WELCOME_PATTERN
+  RPL_WELCOME_PATTERN,
+  CAP_LS_PATTERN
 } from './constants.js';
 
 // ============================================================================
@@ -68,6 +69,9 @@ export class IrcClient extends BaseIrcClient {
   /** Resolved PONG timeout in milliseconds */
   private pongTimeoutMs = DEFAULT_PONG_TIMEOUT_MS;
 
+  /** Whether CAP END has been sent for this connection (prevents duplicates) */
+  private capEndSent = false;
+
   /** Socket metadata captured on connection (ports and addresses) */
   private connectionMeta: {
     localPort: number;
@@ -97,6 +101,7 @@ export class IrcClient extends BaseIrcClient {
     this.characterEncoding = options.encoding ?? 'utf8';
     this.receiveBuffer = Buffer.alloc(0);
     this.pongTimeoutMs = (options.pongTimeout ?? 120) * 1000;
+    this.capEndSent = false;
 
     // Create socket (TLS or plain TCP)
     const socket = this.createSocket(options);
@@ -330,9 +335,24 @@ export class IrcClient extends BaseIrcClient {
     if (line.startsWith('PING ')) {
       const pingData = line.slice(5);
       this.send(`PONG ${pingData}`);
+      return;
     }
+
+    // Handle CAP LS response — detect both prefixed (:server CAP ...) and
+    // non-prefixed (CAP ...) formats. Send CAP END on the final line.
+    const capLsMatch = CAP_LS_PATTERN.exec(line);
+    if (capLsMatch) {
+      // Group 1 is ' *' when this is a multiline continuation; absent on final line
+      const isContinuation = capLsMatch[1] !== undefined;
+      if (!isContinuation && !this.capEndSent) {
+        this.capEndSent = true;
+        this.send('CAP END');
+      }
+      return;
+    }
+
     // Detect successful registration (numeric 001 from server)
-    else if (RPL_WELCOME_PATTERN.test(line)) {
+    if (RPL_WELCOME_PATTERN.test(line)) {
       this.emit('connected');
     }
   }
