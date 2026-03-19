@@ -16,11 +16,31 @@ jobs:
         with:
           node-version: 24.x
 
-      - name: Install and build
+      - name: Install, test, and lint
         run: |
           npm ci
           npm run test
-          npm run build
+          npm run lint
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            simpleircclient/simple-irc-gateway:latest
+            simpleircclient/simple-irc-gateway:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Setup SSH
         env:
@@ -50,7 +70,53 @@ jobs:
           rm -f "$ASKPASS_SCRIPT"
           echo "SSH key added to agent"
 
-      - name: Deploy application
+      - name: Ensure podman is installed on server
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        run: |
+          ssh root@$SSH_HOST 'if ! command -v podman &> /dev/null; then
+            echo "Podman not found, installing..."
+            apt-get update
+            apt-get install -y podman
+            echo "Podman installed"
+          else
+            echo "Podman already installed, skipping"
+          fi'
+
+      - name: Deploy container
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        run: |
+          IMAGE="docker.io/simpleircclient/simple-irc-gateway:${{ github.sha }}"
+
+          ssh root@$SSH_HOST "podman pull $IMAGE"
+          echo "Image pulled"
+
+          ssh root@$SSH_HOST "podman stop sic-gateway 2>/dev/null; podman rm sic-gateway 2>/dev/null; echo 'Old container removed'"
+
+          ssh root@$SSH_HOST "podman run -d \
+            --name sic-gateway \
+            --restart unless-stopped \
+            -p 8667:8667 \
+            -p 113:8113 \
+            -e PORT=8667 \
+            -e HOST=0.0.0.0 \
+            -e PATH_PREFIX=/webirc \
+            -e ALLOWED_ORIGINS=https://app.simpleircclient.com \
+            -e IDENTD_ENABLED=true \
+            -e IDENTD_PORT=8113 \
+            $IMAGE"
+          echo "Container started"
+
+          sleep 5
+          ssh root@$SSH_HOST "podman ps --filter name=sic-gateway --filter status=running -q" | grep -q . || {
+            echo "ERROR: sic-gateway container is not running"
+            ssh root@$SSH_HOST "podman logs sic-gateway --tail 50"
+            exit 1
+          }
+          echo "Container is running"
+
+      - name: Setup Caddy
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
         run: |
@@ -65,43 +131,6 @@ jobs:
             echo "Caddy installed"
           else
             echo "Caddy already installed, skipping"
-          fi'
-
-          ssh root@$SSH_HOST "mkdir -p /opt/sic-gateway"
-          echo "Remote directory created"
-
-          scp dist/gateway.js root@$SSH_HOST:/opt/sic-gateway/gateway.js
-          echo "File deployed"
-
-          ssh root@$SSH_HOST 'if [ ! -f /etc/systemd/system/sic-gateway.service ]; then
-            cat > /etc/systemd/system/sic-gateway.service << "UNIT"
-          [Unit]
-          Description=Simple IRC Client Gateway
-          After=network.target
-
-          [Service]
-          Type=simple
-          User=www-data
-          WorkingDirectory=/opt/sic-gateway
-          ExecStart=/usr/bin/node gateway.js
-          Restart=always
-          RestartSec=10
-          Environment=PORT=8667
-          Environment=HOST=0.0.0.0
-          Environment=PATH_PREFIX=/webirc
-          Environment=ALLOWED_ORIGINS=https://app.simpleircclient.com
-          Environment=IDENTD_ENABLED=true
-          Environment=IDENTD_PORT=113
-          AmbientCapabilities=CAP_NET_BIND_SERVICE
-
-          [Install]
-          WantedBy=multi-user.target
-          UNIT
-            systemctl daemon-reload
-            systemctl enable sic-gateway
-            echo "Service file created and enabled"
-          else
-            echo "Service file already exists, skipping"
           fi'
 
           ssh root@$SSH_HOST 'if [ ! -f /etc/caddy/Caddyfile ]; then
@@ -121,16 +150,19 @@ jobs:
             echo "Caddyfile already exists, skipping"
           fi'
 
-          ssh root@$SSH_HOST "systemctl restart sic-gateway"
-          echo "Service restarted"
-
-          sleep 5
-          ssh root@$SSH_HOST "systemctl is-active --quiet sic-gateway" || {
-            echo "ERROR: sic-gateway service failed to start"
-            ssh root@$SSH_HOST "systemctl status sic-gateway --no-pager"
-            exit 1
-          }
-          echo "Service is running"
+      - name: Remove old systemd service
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        run: |
+          ssh root@$SSH_HOST 'if [ -f /etc/systemd/system/sic-gateway.service ]; then
+            systemctl stop sic-gateway 2>/dev/null || true
+            systemctl disable sic-gateway 2>/dev/null || true
+            rm /etc/systemd/system/sic-gateway.service
+            systemctl daemon-reload
+            echo "Old systemd service removed"
+          else
+            echo "No old systemd service found, skipping"
+          fi'
 
       - name: Deploy firewall script and cronjob
         env:
@@ -139,6 +171,7 @@ jobs:
           HCLOUD_FIREWALL: ${{ secrets.HCLOUD_FIREWALL }}
         run: |
           echo "Deploying firewall script..."
+          ssh root@$SSH_HOST "mkdir -p /opt/sic-gateway"
           scp scripts/update-firewall.sh root@$SSH_HOST:/opt/sic-gateway/update-firewall.sh
           ssh root@$SSH_HOST "chmod +x /opt/sic-gateway/update-firewall.sh"
           echo "Firewall script deployed"
