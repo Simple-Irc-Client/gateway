@@ -92,35 +92,23 @@ jobs:
           ssh root@$SSH_HOST "podman pull $IMAGE"
           echo "Image pulled"
 
-          ssh root@$SSH_HOST "podman stop sic-gateway 2>/dev/null; podman rm sic-gateway 2>/dev/null; echo 'Old container removed'"
+          echo "Deploying Quadlet unit..."
+          scp deploy/sic-gateway.container root@$SSH_HOST:/etc/containers/systemd/sic-gateway.container
+          ssh root@$SSH_HOST "sed -i 's|Image=.*|Image=$IMAGE|' /etc/containers/systemd/sic-gateway.container"
+          echo "Quadlet unit deployed"
 
-          ssh root@$SSH_HOST "podman run -d \
-            --name sic-gateway \
-            --restart unless-stopped \
-            --read-only \
-            --memory 512m \
-            --cpus 1 \
-            -p 8667:8667 \
-            -p 113:8113 \
-            -e PORT=8667 \
-            -e HOST=0.0.0.0 \
-            -e PATH_PREFIX=/webirc \
-            -e ALLOWED_ORIGINS=https://app.simpleircclient.com \
-            -e IDENTD_ENABLED=true \
-            -e IDENTD_PORT=8113 \
-            $IMAGE"
-          echo "Container started"
-
-          ssh root@$SSH_HOST 'cd /etc/systemd/system && podman generate systemd --name --new sic-gateway > container-sic-gateway.service && systemctl daemon-reload && systemctl enable container-sic-gateway.service'
-          echo "Systemd service created and enabled"
+          echo "Reloading and restarting service..."
+          ssh root@$SSH_HOST "systemctl daemon-reload"
+          ssh root@$SSH_HOST "systemctl restart sic-gateway.service"
+          echo "Service restarted"
 
           sleep 5
-          ssh root@$SSH_HOST "podman ps --filter name=sic-gateway --filter status=running -q" | grep -q . || {
-            echo "ERROR: sic-gateway container is not running"
-            ssh root@$SSH_HOST "podman logs sic-gateway --tail 50"
+          ssh root@$SSH_HOST "systemctl is-active sic-gateway.service" || {
+            echo "ERROR: sic-gateway service is not active"
+            ssh root@$SSH_HOST "journalctl -u sic-gateway.service --no-pager -n 50"
             exit 1
           }
-          echo "Container is running"
+          echo "Service is running"
 
       - name: Setup Caddy
         env:

@@ -3,6 +3,7 @@ dist
 .git
 .github
 scripts
+deploy
 *.md
 LICENSE
 eslint.config.js
