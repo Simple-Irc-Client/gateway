@@ -15,8 +15,16 @@ set -euo pipefail
 #   HCLOUD_TOKEN       - Hetzner Cloud API token
 #   HCLOUD_FIREWALL    - Firewall name
 #
+# These can be provided via environment variables or /opt/sic-gateway/.env
+#
 # To add/change admin SSH IPs: edit the "Admin SSH" rule in Hetzner Cloud Dashboard.
 # The next cron run will pick up the change and update nftables.
+
+ENV_FILE="/opt/sic-gateway/.env"
+if [ -f "$ENV_FILE" ]; then
+    # shellcheck source=/dev/null
+    . "$ENV_FILE"
+fi
 
 HCLOUD_API="https://api.hetzner.cloud/v1"
 GITHUB_META_URL="https://api.github.com/meta"

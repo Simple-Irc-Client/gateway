@@ -97,6 +97,9 @@ jobs:
           ssh root@$SSH_HOST "podman run -d \
             --name sic-gateway \
             --restart unless-stopped \
+            --read-only \
+            --memory 512m \
+            --cpus 1 \
             -p 8667:8667 \
             -p 113:8113 \
             -e PORT=8667 \
@@ -165,13 +168,17 @@ jobs:
           ssh root@$SSH_HOST "chmod +x /opt/sic-gateway/update-firewall.sh"
           echo "Firewall script deployed"
 
+          echo "Writing firewall env file..."
+          ssh root@$SSH_HOST "printf '%s\n' 'HCLOUD_TOKEN=$HCLOUD_TOKEN' 'HCLOUD_FIREWALL=$HCLOUD_FIREWALL' > /opt/sic-gateway/.env && chmod 600 /opt/sic-gateway/.env"
+          echo "Env file written"
+
           echo "Running firewall update..."
-          ssh root@$SSH_HOST "HCLOUD_TOKEN='$HCLOUD_TOKEN' HCLOUD_FIREWALL='$HCLOUD_FIREWALL' /opt/sic-gateway/update-firewall.sh"
+          ssh root@$SSH_HOST "/opt/sic-gateway/update-firewall.sh"
           echo "Firewall updated"
 
           echo "Setting up firewall cronjob..."
           ssh root@$SSH_HOST "
-            CRON_CMD=\"0 */6 * * * HCLOUD_TOKEN='$HCLOUD_TOKEN' HCLOUD_FIREWALL='$HCLOUD_FIREWALL' /opt/sic-gateway/update-firewall.sh >> /var/log/update-firewall.log 2>&1\"
+            CRON_CMD=\"0 */6 * * * /opt/sic-gateway/update-firewall.sh >> /var/log/update-firewall.log 2>&1\"
             crontab -l 2>/dev/null | grep -v 'update-firewall' | { cat; echo \"\$CRON_CMD\"; } | crontab -
           "
           echo "Cronjob configured"
