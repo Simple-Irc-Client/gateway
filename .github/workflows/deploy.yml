@@ -108,6 +108,9 @@ jobs:
             $IMAGE"
           echo "Container started"
 
+          ssh root@$SSH_HOST 'cd /etc/systemd/system && podman generate systemd --name --new sic-gateway > container-sic-gateway.service && systemctl daemon-reload && systemctl enable container-sic-gateway.service'
+          echo "Systemd service created and enabled"
+
           sleep 5
           ssh root@$SSH_HOST "podman ps --filter name=sic-gateway --filter status=running -q" | grep -q . || {
             echo "ERROR: sic-gateway container is not running"
