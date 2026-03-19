@@ -150,20 +150,6 @@ jobs:
             echo "Caddyfile already exists, skipping"
           fi'
 
-      - name: Remove old systemd service
-        env:
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-        run: |
-          ssh root@$SSH_HOST 'if [ -f /etc/systemd/system/sic-gateway.service ]; then
-            systemctl stop sic-gateway 2>/dev/null || true
-            systemctl disable sic-gateway 2>/dev/null || true
-            rm /etc/systemd/system/sic-gateway.service
-            systemctl daemon-reload
-            echo "Old systemd service removed"
-          else
-            echo "No old systemd service found, skipping"
-          fi'
-
       - name: Deploy firewall script and cronjob
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
