@@ -4,19 +4,6 @@
 
 WebSocket to IRC gateway for Simple IRC Client.
 
-## Project Structure
-
-```
-src/
-├── config.ts      # Configuration interface and defaults
-├── gateway.ts     # WebSocket server and client management
-├── identd.ts      # Identd (RFC 1413) server for IRC ident responses
-├── irc-client.ts  # IRC protocol client with encoding support
-├── logger.ts      # Colored console logging
-├── main.ts        # Entry point
-└── __tests__/     # Unit tests
-```
-
 ## Local Development
 
 ```bash
@@ -36,62 +23,26 @@ npm run lint       # TypeScript + ESLint checks
 
 ## Server Deployment
 
-### 1. Install Node.js 20+
+### Docker / Podman
 
 ```bash
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install -y nodejs
+docker build -t simple-irc-gateway .
+
+docker run -d \
+  --name sic-gateway \
+  --restart unless-stopped \
+  -p 8667:8667 \
+  -p 113:8113 \
+  -e PORT=8667 \
+  -e HOST=0.0.0.0 \
+  -e IDENTD_ENABLED=true \
+  -e IDENTD_PORT=8113 \
+  simple-irc-gateway
 ```
 
-### 2. Clone and Build
+The container runs as the non-root `node` user. Identd binds to a high port (8113) inside the container, mapped to host port 113 via `-p 113:8113` — no `CAP_NET_BIND_SERVICE` needed.
 
-```bash
-git clone <repo> /opt/irc-gateway
-cd /opt/irc-gateway/gateway
-npm ci
-npm run build
-```
-
-### 3. Create Systemd Service
-
-```bash
-sudo tee /etc/systemd/system/irc-gateway.service << 'EOF'
-[Unit]
-Description=IRC Gateway
-After=network.target
-
-[Service]
-Type=simple
-User=www-data
-WorkingDirectory=/opt/irc-gateway/gateway
-ExecStart=/usr/bin/node dist/gateway.js
-Restart=always
-RestartSec=5
-Environment=PORT=8667
-Environment=HOST=127.0.0.1
-
-# Identd — uncomment to enable (see "Identd" section below)
-# Environment=IDENTD_ENABLED=true
-# Environment=IDENTD_PORT=113
-
-# Allow binding to privileged port 113 without running as root
-# AmbientCapabilities=CAP_NET_BIND_SERVICE
-
-[Install]
-WantedBy=multi-user.target
-EOF
-```
-
-### 4. Start Service
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable irc-gateway
-sudo systemctl start irc-gateway
-sudo systemctl status irc-gateway
-```
-
-### 5. Reverse Proxy (Caddy)
+### Reverse Proxy (Caddy)
 
 ```bash
 sudo apt install caddy
@@ -109,7 +60,7 @@ irc.yourdomain.com {
 sudo systemctl reload caddy
 ```
 
-### 6. Reverse Proxy (Nginx)
+### Reverse Proxy (Nginx)
 
 ```nginx
 server {
@@ -152,15 +103,7 @@ IRC servers query port 113 on connecting clients to verify identity. Without ide
 
 ### Enable identd
 
-Add to your systemd service:
-
-```ini
-Environment=IDENTD_ENABLED=true
-Environment=IDENTD_PORT=113
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-```
-
-Port 113 is privileged (<1024). `AmbientCapabilities=CAP_NET_BIND_SERVICE` lets the `www-data` user bind to it without running as root. Alternatively, use a high port and redirect with iptables/Caddy (see below).
+Set `IDENTD_ENABLED=true` and configure the port. When running in Docker/Podman, use a high port inside the container (e.g. `IDENTD_PORT=8113`) and map it to host port 113 with `-p 113:8113`. This avoids needing any special capabilities.
 
 ### Client ident parameter
 
