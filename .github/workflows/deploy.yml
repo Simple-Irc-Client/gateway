@@ -92,13 +92,13 @@ jobs:
           ssh root@$SSH_HOST "podman pull $IMAGE"
           echo "Image pulled"
 
-          echo "Deploying Quadlet unit..."
-          scp deploy/sic-gateway.container root@$SSH_HOST:/etc/containers/systemd/sic-gateway.container
-          ssh root@$SSH_HOST "sed -i 's|Image=.*|Image=$IMAGE|' /etc/containers/systemd/sic-gateway.container"
-          echo "Quadlet unit deployed"
+          echo "Deploying systemd service..."
+          scp deploy/sic-gateway.service root@$SSH_HOST:/etc/systemd/system/sic-gateway.service
+          ssh root@$SSH_HOST "sed -i 's|IMAGE_PLACEHOLDER|$IMAGE|' /etc/systemd/system/sic-gateway.service"
+          ssh root@$SSH_HOST "systemctl daemon-reload && systemctl enable sic-gateway.service"
+          echo "Service deployed"
 
-          echo "Reloading and restarting service..."
-          ssh root@$SSH_HOST "systemctl daemon-reload"
+          echo "Restarting service..."
           ssh root@$SSH_HOST "systemctl restart sic-gateway.service"
           echo "Service restarted"
 
@@ -152,7 +152,7 @@ jobs:
         run: |
           echo "Deploying firewall script..."
           ssh root@$SSH_HOST "mkdir -p /opt/sic-gateway"
-          scp scripts/update-firewall.sh root@$SSH_HOST:/opt/sic-gateway/update-firewall.sh
+          scp deploy/update-firewall.sh root@$SSH_HOST:/opt/sic-gateway/update-firewall.sh
           ssh root@$SSH_HOST "chmod +x /opt/sic-gateway/update-firewall.sh"
           echo "Firewall script deployed"
 

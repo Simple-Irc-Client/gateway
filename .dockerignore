@@ -2,7 +2,6 @@ node_modules
 dist
 .git
 .github
-scripts
 deploy
 *.md
 LICENSE

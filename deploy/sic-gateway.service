@@ -1,0 +1,33 @@
+[Unit]
+Description=Simple IRC Client Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/bin/podman stop -t 10 sic-gateway
+ExecStartPre=-/usr/bin/podman rm sic-gateway
+ExecStart=/usr/bin/podman run \
+    --name sic-gateway \
+    --read-only \
+    --memory 512m \
+    --cpus 1 \
+    -p 8667:8667 \
+    -p 113:8113 \
+    -e PORT=8667 \
+    -e HOST=0.0.0.0 \
+    -e PATH_PREFIX=/webirc \
+    -e ALLOWED_ORIGINS=https://app.simpleircclient.com \
+    -e IDENTD_ENABLED=true \
+    -e IDENTD_PORT=8113 \
+    --health-cmd 'node -e "Promise.all([fetch(\"http://localhost:8667\").then(r=>{if(!r.ok)throw r.status}),new Promise((res,rej)=>{const s=require(\"net\").connect(8113,\"localhost\",()=>{s.destroy();res()});s.on(\"error\",rej);s.setTimeout(5000,()=>{s.destroy();rej(\"timeout\")})})]).catch(()=>process.exit(1))"' \
+    --health-interval 30s \
+    --health-retries 3 \
+    --health-start-period 5s \
+    IMAGE_PLACEHOLDER
+ExecStop=/usr/bin/podman stop -t 10 sic-gateway
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
