@@ -306,8 +306,7 @@ export class ConnectionHandler {
     // Raw IRC message from server - forward to client
     ircClient.on('raw', (line: string, isFromServer: boolean) => {
       if (isFromServer) {
-        const direction = '>>';
-        console.debug(`[${client.id}] ${direction} ${line}`);
+        // console.debug(`[${client.id}] >> ${line}`);
 
         // Reset idle timeout on meaningful server traffic (not PING/PONG)
         const command = line.startsWith(':')
@@ -319,9 +318,8 @@ export class ConnectionHandler {
 
         // Send raw IRC line to WebSocket client
         this.clientManager.sendRawToClient(client.webSocket, line);
-      } else {
-        const direction = '<<';
-        console.debug(`[${client.id}] ${direction} ${line}`);
+      // } else {
+        // console.debug(`[${client.id}] << ${line}`);
       }
     });
 
