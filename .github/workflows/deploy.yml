@@ -92,6 +92,17 @@ jobs:
           ssh root@$SSH_HOST "podman pull $IMAGE"
           echo "Image pulled"
 
+          echo "Removing stale Quadlet service if present..."
+          ssh root@$SSH_HOST "
+            if systemctl list-unit-files container-sic-gateway.service &>/dev/null; then
+              systemctl stop container-sic-gateway.service 2>/dev/null || true
+              systemctl disable container-sic-gateway.service 2>/dev/null || true
+            fi
+            rm -f /etc/containers/systemd/sic-gateway.container
+            systemctl daemon-reload
+          "
+          echo "Quadlet cleanup done"
+
           echo "Deploying systemd service..."
           scp deploy/sic-gateway.service root@$SSH_HOST:/etc/systemd/system/sic-gateway.service
           ssh root@$SSH_HOST "sed -i 's|IMAGE_PLACEHOLDER|$IMAGE|' /etc/systemd/system/sic-gateway.service"
