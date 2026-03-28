@@ -11,6 +11,7 @@ FROM node:24-slim
 
 WORKDIR /app
 COPY --from=build /app/dist/gateway.js ./gateway.js
+COPY healthcheck.js ./healthcheck.js
 USER node
 EXPOSE 8667 8113
 CMD ["node", "gateway.js"]

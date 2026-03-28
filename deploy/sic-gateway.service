@@ -20,7 +20,7 @@ ExecStart=/usr/bin/podman run \
     -e ALLOWED_ORIGINS=https://app.simpleircclient.com \
     -e IDENTD_ENABLED=true \
     -e IDENTD_PORT=8113 \
-    --health-cmd 'node -e "Promise.all([fetch(\"http://localhost:8667\").then(r=>{if(!r.ok)throw r.status}),new Promise((res,rej)=>{const s=require(\"net\").connect(8113,\"localhost\",()=>{s.destroy();res()});s.on(\"error\",rej);s.setTimeout(5000,()=>{s.destroy();rej(\"timeout\")})})]).then(()=>process.exit(0)).catch(()=>process.exit(1))"' \
+    --health-cmd "node /app/healthcheck.js" \
     --health-interval 30s \
     --health-retries 3 \
     --health-start-period 5s \
