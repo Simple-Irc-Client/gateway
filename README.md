@@ -7,8 +7,8 @@ WebSocket to IRC gateway for Simple IRC Client.
 ## Local Development
 
 ```bash
-npm install
-npm start
+pnpm install
+pnpm start
 ```
 
 Gateway runs on `ws://localhost:8667/irc`
@@ -16,9 +16,9 @@ Gateway runs on `ws://localhost:8667/irc`
 ## Testing
 
 ```bash
-npm test           # Run tests once
-npm run test:watch # Run tests in watch mode
-npm run lint       # TypeScript + ESLint checks
+pnpm test           # Run tests once
+pnpm run test:watch # Run tests in watch mode
+pnpm run lint       # TypeScript + ESLint checks
 ```
 
 ## Server Deployment

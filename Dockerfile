@@ -1,11 +1,13 @@
 FROM node:24 AS build
 
+RUN corepack enable
+
 WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci
+COPY package.json pnpm-lock.yaml .npmrc ./
+RUN pnpm install --frozen-lockfile
 COPY src/ src/
 COPY build.js tsconfig.json server.ts ./
-RUN npm run build
+RUN pnpm run build
 
 FROM node:24-slim
 
