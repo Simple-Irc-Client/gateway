@@ -180,6 +180,41 @@ describe('IdentdServer', () => {
     expect(response).not.toContain('secretuser');
   });
 
+  it('does not write to client socket if it closes before retry fires', async () => {
+    // Don't register — first lookup will miss, retry will fire after 500ms.
+    // Close the client socket before the retry fires.
+    const destroyed = await new Promise<boolean>((resolve, reject) => {
+      const socket = net.connect({ port: TEST_PORT, host: '127.0.0.1' }, () => {
+        socket.write('54321, 6697\r\n');
+        // Close immediately — the retry should see socket.destroyed and bail
+        setTimeout(() => socket.destroy(), 100);
+      });
+
+      let gotData = false;
+      socket.on('data', () => { gotData = true; });
+      socket.on('close', () => resolve(!gotData));
+      socket.on('error', reject);
+      setTimeout(() => reject(new Error('timeout')), 3000);
+    });
+
+    // The socket was destroyed before the retry, so no response should have been received
+    expect(destroyed).toBe(true);
+  });
+
+  it('cancels retry timer when socket closes', async () => {
+    // Don't register. Send query, close socket immediately.
+    // Verify no crash or unhandled error after the retry delay.
+    const socket = net.connect({ port: TEST_PORT, host: '127.0.0.1' }, () => {
+      socket.write('54321, 6697\r\n');
+    });
+    // eslint-disable-next-line @typescript-eslint/no-empty-function
+    socket.on('error', () => {});
+    socket.destroy();
+
+    // Wait past the retry delay — should not throw or crash
+    await new Promise((r) => setTimeout(r, 700));
+  });
+
   it('rejects connections over the concurrency limit', async () => {
     // Register an entry so queries work
     server.register(54321, 6697, '127.0.0.1', 'testuser');

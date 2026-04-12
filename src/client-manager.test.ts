@@ -362,6 +362,83 @@ describe('ClientManager', () => {
     });
   });
 
+  describe('clientCount', () => {
+    it('returns the number of connected clients without allocating an array', () => {
+      const serverConfig = { host: 'irc.example.com', port: 6667, tls: true, encoding: 'utf8' };
+
+      expect(clientManager.clientCount).toBe(0);
+
+      const client1 = clientManager.createClient(mockWebSocket as any, '127.0.0.1', serverConfig, 'user1');
+      expect(clientManager.clientCount).toBe(1);
+
+      clientManager.createClient(mockWebSocket as any, '127.0.0.1', serverConfig, 'user2');
+      expect(clientManager.clientCount).toBe(2);
+
+      clientManager.removeClient(client1);
+      expect(clientManager.clientCount).toBe(1);
+    });
+  });
+
+  describe('Removed flag', () => {
+    it('sets removed flag on removeClient', () => {
+      const serverConfig = { host: 'irc.example.com', port: 6667, tls: true, encoding: 'utf8' };
+      const client = clientManager.createClient(mockWebSocket as any, '127.0.0.1', serverConfig, 'testuser');
+
+      expect(client.removed).toBe(false);
+      clientManager.removeClient(client);
+      expect(client.removed).toBe(true);
+    });
+
+    it('removeClient is idempotent (double-remove does not throw)', () => {
+      const serverConfig = { host: 'irc.example.com', port: 6667, tls: true, encoding: 'utf8' };
+      const client = clientManager.createClient(mockWebSocket as any, '127.0.0.1', serverConfig, 'testuser');
+
+      clientManager.removeClient(client);
+      clientManager.removeClient(client);
+      expect(client.removed).toBe(true);
+      expect(clientManager.clientCount).toBe(0);
+    });
+
+    it('registration timeout callback does not fire after removal', () => {
+      const serverConfig = { host: 'irc.example.com', port: 6667, tls: true, encoding: 'utf8' };
+      const client = clientManager.createClient(mockWebSocket as any, '127.0.0.1', serverConfig, 'testuser');
+
+      clientManager.startRegistrationTimeout(client, 10, 'Test quit');
+      clientManager.removeClient(client);
+
+      vi.advanceTimersByTime(10 * 1000);
+
+      expect(mockWebSocket.closed).toBe(false);
+      expect(mockWebSocket.sentMessages).not.toContain('ERROR :Registration timeout');
+    });
+
+    it('idle timeout callback does not fire after removal', () => {
+      const serverConfig = { host: 'irc.example.com', port: 6667, tls: true, encoding: 'utf8' };
+      const client = clientManager.createClient(mockWebSocket as any, '127.0.0.1', serverConfig, 'testuser');
+
+      clientManager.resetIdleTimeout(client, 10, 'Test quit');
+      clientManager.removeClient(client);
+
+      vi.advanceTimersByTime(10 * 1000);
+
+      expect(mockWebSocket.closed).toBe(false);
+      expect(mockWebSocket.sentMessages.length).toBe(0);
+    });
+
+    it('ping timer callback does not fire after removal', () => {
+      const serverConfig = { host: 'irc.example.com', port: 6667, tls: true, encoding: 'utf8' };
+      const client = clientManager.createClient(mockWebSocket as any, '127.0.0.1', serverConfig, 'testuser');
+
+      clientManager.startWsPing(client, 30, 5);
+      clientManager.removeClient(client);
+
+      vi.advanceTimersByTime(30 * 1000);
+
+      // Should not have terminated the connection
+      expect(mockWebSocket.closed).toBe(false);
+    });
+  });
+
   describe('Utility Methods', () => {
     it('sends raw messages to clients', () => {
       clientManager.sendRawToClient(mockWebSocket as any, 'TEST MESSAGE');
@@ -370,10 +447,32 @@ describe('ClientManager', () => {
 
     it('does not send messages to closed connections', () => {
       mockWebSocket.close();
-      
+
       // Should not throw or send to closed connection
-      clientManager.sendRawToClient(mockWebSocket as any, 'TEST MESSAGE');
+      const result = clientManager.sendRawToClient(mockWebSocket as any, 'TEST MESSAGE');
+      expect(result).toBe(false);
       expect(mockWebSocket.sentMessages).not.toContain('TEST MESSAGE');
+    });
+
+    it('returns true (drained) when bufferedAmount is low', () => {
+      (mockWebSocket as any).bufferedAmount = 0;
+      const result = clientManager.sendRawToClient(mockWebSocket as any, 'TEST MESSAGE');
+      expect(result).toBe(true);
+    });
+
+    it('returns false (backpressure) when bufferedAmount exceeds 1 MiB', () => {
+      (mockWebSocket as any).bufferedAmount = 2 * 1024 * 1024;
+      const result = clientManager.sendRawToClient(mockWebSocket as any, 'TEST MESSAGE');
+      expect(result).toBe(false);
+      // Message was still sent — it's a backpressure signal, not a drop
+      expect(mockWebSocket.sentMessages).toContain('TEST MESSAGE');
+    });
+
+    it('catches ws.send() exceptions and returns false', () => {
+      const throwingWs = new MockWebSocket();
+      throwingWs.send = () => { throw new Error('frame too large'); };
+      const result = clientManager.sendRawToClient(throwingWs as any, 'TEST MESSAGE');
+      expect(result).toBe(false);
     });
   });
 });

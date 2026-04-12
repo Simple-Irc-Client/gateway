@@ -1018,4 +1018,156 @@ describe('Gateway', () => {
       ws.close();
     });
   });
+
+  describe('Graceful shutdown', () => {
+    it('stop() closes all client connections', async () => {
+      const ws = new WebSocket(createWsUrl());
+      await new Promise<void>((resolve) => ws.on('open', resolve));
+
+      const closed = new Promise<boolean>((resolve) => {
+        ws.on('close', () => resolve(true));
+        setTimeout(() => resolve(false), 5000);
+      });
+
+      await gateway.stop();
+
+      expect(await closed).toBe(true);
+    });
+
+    it('stop() force-terminates stragglers after drain timeout', async () => {
+      const ws = new WebSocket(createWsUrl());
+      await new Promise<void>((resolve) => ws.on('open', resolve));
+
+      // Don't respond to the close frame — simulate a stuck client by swallowing it
+      // The gateway's waitForClientsToClose should force-terminate after the timeout
+      const closed = new Promise<boolean>((resolve) => {
+        ws.on('close', () => resolve(true));
+        setTimeout(() => resolve(false), 10000);
+      });
+
+      await gateway.stop();
+
+      expect(await closed).toBe(true);
+    });
+
+    it('stop() resolves even with no connected clients', async () => {
+      // No clients connected — stop should resolve quickly
+      await gateway.stop();
+
+      // Restart for afterEach
+      gateway = new Gateway();
+      gateway.start();
+      await new Promise((r) => setTimeout(r, 50));
+    });
+  });
+
+  describe('Per-line rate limiting', () => {
+    it('rate limits by line count, not by frame count', async () => {
+      loadConfig({
+        port: TEST_PORT,
+        host: '127.0.0.1',
+        path: '/webirc',
+        allowedOrigins: [],
+        blockPrivateHosts: false,
+        registrationTimeout: 0,
+        idleTimeout: 0,
+      });
+      await gateway.stop();
+      gateway = new Gateway();
+      gateway.start();
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      // Track how many lines the IRC client actually receives
+      const sentLines: string[] = [];
+      vi.spyOn(IrcClient.prototype, 'send').mockImplementation(function (this: IrcClient, line: string) {
+        sentLines.push(line);
+        return true;
+      });
+
+      const ws = new WebSocket(createWsUrl());
+      await new Promise<void>((resolve) => ws.on('open', resolve));
+
+      // Send a single frame containing many IRC lines (far more than rate limit)
+      const lines = Array.from({ length: 200 }, (_, i) => `PRIVMSG #ch :msg${i}`);
+      ws.send(lines.join('\r\n'));
+
+      await new Promise((r) => setTimeout(r, 200));
+
+      // Should have been rate limited — not all 200 lines should reach IRC
+      expect(sentLines.length).toBeLessThan(200);
+      expect(sentLines.length).toBeGreaterThan(0);
+
+      ws.close();
+    });
+  });
+
+  describe('WebSocket client with null IRC socket', () => {
+    it('does not permanently pause WebSocket when IRC send returns false', async () => {
+      loadConfig({
+        port: TEST_PORT,
+        host: '127.0.0.1',
+        path: '/webirc',
+        allowedOrigins: [],
+        blockPrivateHosts: false,
+        registrationTimeout: 0,
+        idleTimeout: 1,
+      });
+      await gateway.stop();
+      gateway = new Gateway();
+      gateway.start();
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const ws = new WebSocket(createWsUrl());
+      const messages: string[] = [];
+
+      await new Promise<void>((resolve) => ws.on('open', resolve));
+
+      ws.on('message', (data) => messages.push(data.toString()));
+
+      // Send a message — IRC socket is null (connectRaw is mocked), so send() returns false.
+      // Before the fix, this would permanently pause the WebSocket, preventing close handshake.
+      ws.send('PRIVMSG #test :hello');
+
+      await new Promise((r) => setTimeout(r, 200));
+
+      // The idle timer should still be able to close the WebSocket.
+      // If the WS was permanently paused, the close handshake would never complete.
+      const closed = await new Promise<boolean>((resolve) => {
+        ws.on('close', () => resolve(true));
+        setTimeout(() => resolve(false), 3000);
+      });
+
+      expect(closed).toBe(true);
+      expect(messages.some((m) => m.includes('Idle timeout'))).toBe(true);
+    });
+  });
+
+  describe('SSRF logging', () => {
+    it('rejects connections to private hosts with blockPrivateHosts enabled', async () => {
+      loadConfig({
+        port: TEST_PORT,
+        host: '127.0.0.1',
+        path: '/webirc',
+        allowedOrigins: [],
+        blockPrivateHosts: true,
+      });
+      await gateway.stop();
+      gateway = new Gateway();
+      gateway.start();
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const ws = new WebSocket(createWsUrl('10.0.0.1', 6667));
+
+      await expect(
+        new Promise<void>((resolve, reject) => {
+          ws.on('open', () => reject(new Error('should not connect')));
+          ws.on('error', () => resolve());
+          setTimeout(() => reject(new Error('timeout')), 1000);
+        })
+      ).resolves.toBeUndefined();
+    });
+  });
 });

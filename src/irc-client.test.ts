@@ -347,3 +347,98 @@ describe('IrcClient line parsing', () => {
     expect(onRaw).toHaveBeenCalledWith(':server NOTICE * :Hello', true);
   });
 });
+
+describe('IrcClient send() return value and backpressure', () => {
+  let client: IrcClient;
+  let server: Server;
+  let serverPort: number;
+  let serverSocket: import('net').Socket | null = null;
+
+  beforeEach(async () => {
+    client = new IrcClient();
+    serverSocket = null;
+
+    server = createServer((socket) => {
+      serverSocket = socket;
+      // eslint-disable-next-line @typescript-eslint/no-empty-function
+      socket.on('error', () => {});
+    });
+
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', () => {
+        const addr = server.address();
+        serverPort = typeof addr === 'object' && addr !== null ? addr.port : 0;
+        resolve();
+      });
+    });
+  });
+
+  afterEach(async () => {
+    client.destroy();
+    serverSocket?.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  it('send() returns false when socket is not writable', () => {
+    const result = client.send('PING test');
+    expect(result).toBe(false);
+  });
+
+  it('send() returns true when socket has buffer space', async () => {
+    client.connectRaw({ host: '127.0.0.1', port: serverPort });
+    await new Promise((r) => setTimeout(r, 50));
+
+    const result = client.send('PING test');
+    expect(result).toBe(true);
+  });
+
+  it('writable getter reflects socket state', async () => {
+    expect(client.writable).toBe(false);
+
+    client.connectRaw({ host: '127.0.0.1', port: serverPort });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(client.writable).toBe(true);
+
+    client.destroy();
+    expect(client.writable).toBe(false);
+  });
+
+  it('waitForDrain() rejects when socket is null', async () => {
+    await expect(client.waitForDrain()).rejects.toThrow('Socket closed');
+  });
+
+  it('waitForDrain() resolves immediately when socket is not backed up', async () => {
+    client.connectRaw({ host: '127.0.0.1', port: serverPort });
+    await new Promise((r) => setTimeout(r, 50));
+
+    await expect(client.waitForDrain()).resolves.toBeUndefined();
+  });
+
+  it('pause() and resume() control the underlying socket', async () => {
+    client.connectRaw({ host: '127.0.0.1', port: serverPort });
+    await new Promise((r) => setTimeout(r, 50));
+
+    const onRaw = vi.fn();
+    client.on('raw', onRaw);
+    onRaw.mockClear();
+
+    client.pause();
+
+    serverSocket?.write(':server NOTICE * :while-paused\r\n');
+    await new Promise((r) => setTimeout(r, 50));
+
+    const pausedCalls = onRaw.mock.calls.filter(
+      ([line, fromServer]: [string, boolean]) => fromServer && line.includes('while-paused')
+    );
+    expect(pausedCalls.length).toBe(0);
+
+    client.resume();
+    await new Promise((r) => setTimeout(r, 50));
+
+    const resumedCalls = onRaw.mock.calls.filter(
+      ([line, fromServer]: [string, boolean]) => fromServer && line.includes('while-paused')
+    );
+    expect(resumedCalls.length).toBe(1);
+  });
+});
