@@ -429,7 +429,7 @@ describe('IrcClient send() return value and backpressure', () => {
     await new Promise((r) => setTimeout(r, 50));
 
     const pausedCalls = onRaw.mock.calls.filter(
-      ([line, fromServer]: [string, boolean]) => fromServer && line.includes('while-paused')
+      ([line, fromServer]) => fromServer && (line as string).includes('while-paused')
     );
     expect(pausedCalls.length).toBe(0);
 
@@ -437,7 +437,7 @@ describe('IrcClient send() return value and backpressure', () => {
     await new Promise((r) => setTimeout(r, 50));
 
     const resumedCalls = onRaw.mock.calls.filter(
-      ([line, fromServer]: [string, boolean]) => fromServer && line.includes('while-paused')
+      ([line, fromServer]) => fromServer && (line as string).includes('while-paused')
     );
     expect(resumedCalls.length).toBe(1);
   });
