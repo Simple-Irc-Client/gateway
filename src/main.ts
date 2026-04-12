@@ -95,10 +95,20 @@ function parseAllowedServers(value: string | undefined): string[] | undefined {
  * Set up graceful shutdown handlers
  */
 function setupShutdownHandlers(gateway: Gateway): void {
+  let shuttingDown = false;
   const handleShutdown = (): void => {
-    console.info('Received shutdown signal...');
-    gateway.stop();
-    process.exit(0);
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.info('Received shutdown signal, draining...');
+    gateway
+      .stop()
+      .then(() => {
+        process.exit(0);
+      })
+      .catch((error: Error) => {
+        console.error(`Shutdown error: ${error.message}`);
+        process.exit(1);
+      });
   };
 
   // Handle Ctrl+C
@@ -108,11 +118,31 @@ function setupShutdownHandlers(gateway: Gateway): void {
   process.on('SIGTERM', handleShutdown);
 }
 
+/**
+ * Set up process-level safety nets. A stray promise rejection or synchronous
+ * throw inside an event handler would otherwise take down the gateway without
+ * a log — we want structured output and a clean exit so the supervisor can
+ * restart us instead of leaving the process in a half-broken state.
+ */
+function setupProcessSafetyNets(): void {
+  process.on('unhandledRejection', (reason) => {
+    const msg = reason instanceof Error ? `${reason.message}\n${reason.stack ?? ''}` : String(reason);
+    console.error(`[gateway] Unhandled rejection: ${msg}`);
+  });
+
+  process.on('uncaughtException', (error) => {
+    console.error(`[gateway] Uncaught exception: ${error.message}\n${error.stack ?? ''}`);
+    // Exceptions leave the process state undefined — exit so we can be restarted.
+    process.exit(1);
+  });
+}
+
 // ============================================================================
 // Auto-start when run directly
 // ============================================================================
 
 if (isRunDirectly()) {
+  setupProcessSafetyNets();
   const config = getConfigFromEnvironment();
   const gateway = startGateway(config);
   setupShutdownHandlers(gateway);

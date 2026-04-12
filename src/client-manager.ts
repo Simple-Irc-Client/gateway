@@ -47,6 +47,13 @@ export interface ConnectedClient {
   idleTimer: ReturnType<typeof setTimeout> | null;
   /** Username for identd responses */
   identUsername: string;
+  /**
+   * Tombstone flag set by removeClient(). Timer callbacks that are already
+   * queued in the event loop when the client is torn down MUST short-circuit
+   * via this flag — clearTimeout cannot cancel a callback that has already
+   * been dispatched for execution.
+   */
+  removed: boolean;
 }
 
 // ============================================================================
@@ -102,6 +109,7 @@ export class ClientManager {
       isRegistered: false,
       idleTimer: null,
       identUsername: resolvedIdentUsername,
+      removed: false,
     };
 
     // Track the client
@@ -120,6 +128,9 @@ export class ClientManager {
    * Remove a client from the manager
    */
   removeClient(client: ConnectedClient): void {
+    if (client.removed) return;
+    client.removed = true;
+
     // Stop all timers
     this.stopWsPing(client);
     this.clearRegistrationTimeout(client);
@@ -140,6 +151,13 @@ export class ClientManager {
    */
   getClient(clientId: string): ConnectedClient | undefined {
     return this.connectedClients.get(clientId);
+  }
+
+  /**
+   * Get the number of connected clients
+   */
+  get clientCount(): number {
+    return this.connectedClients.size;
   }
 
   /**
@@ -233,6 +251,7 @@ export class ClientManager {
     if (timeoutSeconds <= 0) return;
 
     client.registrationTimer = setTimeout(() => {
+      if (client.removed) return;
       if (!client.isRegistered) {
         console.info(`[${client.id}] Registration timeout, no NICK/USER received`);
         this.sendRawToClient(client.webSocket, 'ERROR :Registration timeout');
@@ -275,6 +294,7 @@ export class ClientManager {
     this.clearIdleTimeout(client);
 
     client.idleTimer = setTimeout(() => {
+      if (client.removed) return;
       console.info(`[${client.id}] Idle timeout, no IRC traffic for ${timeoutSeconds}s`);
       this.sendRawToClient(client.webSocket, `ERROR :Idle timeout (${timeoutSeconds}s)`);
       client.webSocket.close();
@@ -305,6 +325,10 @@ export class ClientManager {
     const timeoutMs = timeoutSeconds * 1000;
 
     client.wsPingTimer = setInterval(() => {
+      if (client.removed) {
+        this.stopWsPing(client);
+        return;
+      }
       if (client.webSocket.readyState !== WebSocket.OPEN) {
         this.stopWsPing(client);
         return;
@@ -313,9 +337,16 @@ export class ClientManager {
       // Skip ping if still waiting for a pong from the previous one
       if (client.wsPongTimer !== null) return;
 
-      client.webSocket.ping();
+      try {
+        client.webSocket.ping();
+      } catch (error) {
+        // Ping can throw on a racy half-closed socket — don't let it crash the process.
+        console.warn(`[${client.id}] ping failed: ${(error as Error).message}`);
+        return;
+      }
 
       client.wsPongTimer = setTimeout(() => {
+        if (client.removed) return;
         console.info(`[${client.id}] WebSocket pong timeout, terminating connection`);
         client.webSocket.terminate();
       }, timeoutMs);
@@ -348,11 +379,24 @@ export class ClientManager {
   // ==========================================================================
 
   /**
-   * Send a raw IRC line to a web client via WebSocket
+   * Send a raw IRC line to a web client via WebSocket.
+   *
+   * Returns `true` if the socket drained the write synchronously, `false`
+   * when the internal buffer has filled and the caller should stop pushing
+   * data until a `'drain'` event fires. A thrown send (closed socket,
+   * frame-too-large) is caught here so a single bad client cannot crash
+   * the whole gateway process.
    */
-  sendRawToClient(webSocket: WebSocket, line: string): void {
-    if (webSocket.readyState === WebSocket.OPEN) {
+  sendRawToClient(webSocket: WebSocket, line: string): boolean {
+    if (webSocket.readyState !== WebSocket.OPEN) return false;
+    try {
       webSocket.send(line);
+    } catch (error) {
+      console.warn(`[client-manager] ws.send failed: ${(error as Error).message}`);
+      return false;
     }
+    // `ws` exposes buffered bytes — treat > 1 MiB as backpressure so the
+    // caller can pause upstream IRC reads until the client drains.
+    return webSocket.bufferedAmount < 1_048_576;
   }
 }

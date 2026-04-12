@@ -117,6 +117,7 @@ export class ConnectionHandler {
 
     // SSRF protection: block private/reserved IP ranges
     if (config.blockPrivateHosts && isPrivateHost(host)) {
+      console.warn(`[gateway] SSRF blocked: ${clientIp} tried to connect to private host ${host}`);
       this.rejectConnection(socket, 403, 'Forbidden - Private hosts not allowed');
       return;
     }
@@ -133,12 +134,13 @@ export class ConnectionHandler {
     // Check per-IP connection limit
     const currentIpConnections = this.clientManager.getIpConnectionCount(clientIp);
     if (currentIpConnections >= config.maxConnectionsPerIp) {
+      console.warn(`[gateway] Per-IP limit reached: ${clientIp} (${currentIpConnections} connections)`);
       this.rejectConnection(socket, 429, 'Too Many Requests');
       return;
     }
 
     // Check total client limit
-    if (this.clientManager.getAllClients().length >= config.maxClients) {
+    if (this.clientManager.clientCount >= config.maxClients) {
       this.rejectConnection(socket, 503, 'Service Unavailable');
       return;
     }
@@ -268,16 +270,18 @@ export class ConnectionHandler {
    * which are forwarded directly to the IRC server.
    */
   private handleClientMessage(client: ConnectedClient, rawMessage: string): void {
-    // Apply rate limiting
-    if (!this.clientManager.handleClientMessage(client, rawMessage)) {
-      return;
-    }
-
     // Forward raw IRC command to IRC server
     if (client.ircClient) {
-      // Handle multiple lines (some clients might batch)
+      // Handle multiple lines (some clients might batch). Rate limiting is
+      // applied per-line, not per-frame: otherwise a single 64 KiB frame
+      // containing thousands of IRC commands would slip through a one-count
+      // check and flood the upstream server.
       const lines = rawMessage.split(/[\r\n]+/).filter(line => line.length > 0);
       for (const line of lines) {
+        if (!this.clientManager.handleClientMessage(client, line)) {
+          // Rate limit reached for this window — drop remaining lines in the batch.
+          return;
+        }
         // Check for registration commands (NICK/USER/CAP/PASS)
         this.clientManager.checkRegistration(client, line);
 
@@ -287,7 +291,24 @@ export class ConnectionHandler {
           this.clientManager.resetIdleTimeout(client, getConfig().idleTimeout, getConfig().quitMessage);
         }
 
-        client.ircClient.send(line);
+        const drained = client.ircClient.send(line);
+        if (!drained && client.ircClient.writable && client.webSocket.readyState === WebSocket.OPEN) {
+          console.info(`[${client.id}] IRC backpressure, pausing WebSocket reads`);
+          client.webSocket.pause();
+          client.ircClient
+            .waitForDrain()
+            .then(() => {
+              console.info(`[${client.id}] IRC drained, resuming WebSocket reads`);
+              if (client.webSocket.readyState === WebSocket.OPEN) {
+                client.webSocket.resume();
+              }
+            })
+            .catch(() => {
+              if (client.webSocket.readyState === WebSocket.OPEN) {
+                client.webSocket.resume();
+              }
+            });
+        }
       }
     }
   }
@@ -316,8 +337,18 @@ export class ConnectionHandler {
           this.clientManager.resetIdleTimeout(client, getConfig().idleTimeout, getConfig().quitMessage);
         }
 
-        // Send raw IRC line to WebSocket client
-        this.clientManager.sendRawToClient(client.webSocket, line);
+        // Send raw IRC line to WebSocket client. If the client is slow and
+        // its buffer fills, pause the IRC socket so upstream data doesn't
+        // pile up in the gateway's memory unbounded.
+        const drained = this.clientManager.sendRawToClient(client.webSocket, line);
+        if (!drained) {
+          console.info(`[${client.id}] WebSocket backpressure, pausing IRC reads`);
+          ircClient.pause();
+          this.waitForClientDrain(client.webSocket, () => {
+            console.info(`[${client.id}] WebSocket drained, resuming IRC reads`);
+            ircClient.resume();
+          });
+        }
       // } else {
         // console.debug(`[${client.id}] << ${line}`);
       }
@@ -341,5 +372,28 @@ export class ConnectionHandler {
       // Send error as IRC ERROR message
       this.clientManager.sendRawToClient(client.webSocket, `ERROR :${error.message}`);
     });
+  }
+
+  /**
+   * Poll the WebSocket's buffered bytes until it has room again, then invoke
+   * the drain callback. `ws` doesn't surface a true 'drain' event, so we poll
+   * cheaply rather than hook into the underlying socket. The 50ms cadence
+   * trades a tiny bit of latency for simplicity and zero extra dependencies.
+   */
+  private waitForClientDrain(webSocket: WebSocket, onDrain: () => void): void {
+    const HIGH_WATER_MARK = 1_048_576;
+    const CHECK_INTERVAL_MS = 50;
+    const poll = (): void => {
+      if (webSocket.readyState !== WebSocket.OPEN) {
+        // Socket closed — no need to resume; the IRC client will be torn down.
+        return;
+      }
+      if (webSocket.bufferedAmount < HIGH_WATER_MARK / 2) {
+        onDrain();
+        return;
+      }
+      setTimeout(poll, CHECK_INTERVAL_MS);
+    };
+    setTimeout(poll, CHECK_INTERVAL_MS);
   }
 }

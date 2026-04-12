@@ -27,8 +27,8 @@ describe('Gateway', () => {
     gateway.start();
   });
 
-  afterEach(() => {
-    gateway.stop();
+  afterEach(async () => {
+    await gateway.stop();
   });
 
   it('starts and accepts connections with valid query params', async () => {
@@ -82,7 +82,7 @@ describe('Gateway', () => {
 
   it('enforces max connections per IP', async () => {
     loadConfig({ port: TEST_PORT, host: '127.0.0.1', path: '/webirc', maxConnectionsPerIp: 2, allowedOrigins: [], blockPrivateHosts: false });
-    gateway.stop();
+    await gateway.stop();
     gateway = new Gateway();
     gateway.start();
 
@@ -139,7 +139,7 @@ describe('Gateway', () => {
       allowedOrigins: [],
       blockPrivateHosts: false,
     });
-    gateway.stop();
+    await gateway.stop();
     gateway = new Gateway();
     gateway.start();
 
@@ -166,7 +166,7 @@ describe('Gateway', () => {
       allowedOrigins: [],
       blockPrivateHosts: false,
     });
-    gateway.stop();
+    await gateway.stop();
     gateway = new Gateway();
     gateway.start();
 
@@ -193,7 +193,7 @@ describe('Gateway', () => {
         path: '/webirc',
         allowedOrigins: ['https://simpleircclient.com'],
       });
-      gateway.stop();
+      await gateway.stop();
       gateway = new Gateway();
       gateway.start();
 
@@ -219,7 +219,7 @@ describe('Gateway', () => {
         path: '/webirc',
         allowedOrigins: ['https://simpleircclient.com'],
       });
-      gateway.stop();
+      await gateway.stop();
       gateway = new Gateway();
       gateway.start();
 
@@ -244,7 +244,7 @@ describe('Gateway', () => {
         path: '/webirc',
         allowedOrigins: ['https://simpleircclient.com'],
       });
-      gateway.stop();
+      await gateway.stop();
       gateway = new Gateway();
       gateway.start();
 
@@ -271,7 +271,7 @@ describe('Gateway', () => {
         path: '/webirc',
         allowedOrigins: [],
       });
-      gateway.stop();
+      await gateway.stop();
       gateway = new Gateway();
       gateway.start();
 
@@ -298,7 +298,7 @@ describe('Gateway', () => {
         path: '/webirc',
         allowedOrigins: ['https://simpleircclient.com', 'https://dev.simpleircclient.com'],
       });
-      gateway.stop();
+      await gateway.stop();
       gateway = new Gateway();
       gateway.start();
 
@@ -320,9 +320,9 @@ describe('Gateway', () => {
   });
 
   describe('SSRF protection', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
       loadConfig({ port: TEST_PORT, host: '127.0.0.1', path: '/webirc', allowedOrigins: [], blockPrivateHosts: true });
-      gateway.stop();
+      await gateway.stop();
       gateway = new Gateway();
       gateway.start();
     });
@@ -505,7 +505,7 @@ describe('Gateway', () => {
         allowedOrigins: [],
         blockPrivateHosts: false,
       });
-      gateway.stop();
+      await gateway.stop();
       gateway = new Gateway();
       gateway.start();
 
@@ -637,7 +637,7 @@ describe('Gateway', () => {
         blockPrivateHosts: false,
         enforceTls: false
       });
-      gateway.stop();
+      await gateway.stop();
       gateway = new Gateway();
       gateway.start();
 
@@ -662,7 +662,7 @@ describe('Gateway', () => {
         blockPrivateHosts: false,
         enforceTls: true
       });
-      gateway.stop();
+      await gateway.stop();
       gateway = new Gateway();
       gateway.start();
 
@@ -686,7 +686,7 @@ describe('Gateway', () => {
         blockPrivateHosts: false,
         enforceTls: true
       });
-      gateway.stop();
+      await gateway.stop();
       gateway = new Gateway();
       gateway.start();
 
@@ -711,7 +711,7 @@ describe('Gateway', () => {
         blockPrivateHosts: false,
         enforceTls: true
       });
-      gateway.stop();
+      await gateway.stop();
       gateway = new Gateway();
       gateway.start();
 
@@ -745,7 +745,7 @@ describe('Gateway', () => {
         wsPingInterval: 1,
         wsPongTimeout: 3,
       });
-      gateway.stop();
+      await gateway.stop();
       gateway = new Gateway();
       gateway.start();
 
@@ -777,7 +777,7 @@ describe('Gateway', () => {
         wsPingInterval: 1,
         wsPongTimeout: 1,
       });
-      gateway.stop();
+      await gateway.stop();
       gateway = new Gateway();
       gateway.start();
 
@@ -811,7 +811,7 @@ describe('Gateway', () => {
         wsPingInterval: 1,
         wsPongTimeout: 1,
       });
-      gateway.stop();
+      await gateway.stop();
       gateway = new Gateway();
       gateway.start();
 
@@ -841,7 +841,7 @@ describe('Gateway', () => {
         registrationTimeout: 1,
         idleTimeout: 0,
       });
-      gateway.stop();
+      await gateway.stop();
       gateway = new Gateway();
       gateway.start();
 
@@ -874,7 +874,7 @@ describe('Gateway', () => {
         registrationTimeout: 1,
         idleTimeout: 0,
       });
-      gateway.stop();
+      await gateway.stop();
       gateway = new Gateway();
       gateway.start();
 
@@ -904,7 +904,7 @@ describe('Gateway', () => {
         registrationTimeout: 1,
         idleTimeout: 0,
       });
-      gateway.stop();
+      await gateway.stop();
       gateway = new Gateway();
       gateway.start();
 
@@ -934,7 +934,7 @@ describe('Gateway', () => {
         registrationTimeout: 0,
         idleTimeout: 1,
       });
-      gateway.stop();
+      await gateway.stop();
       gateway = new Gateway();
       gateway.start();
 
@@ -970,7 +970,7 @@ describe('Gateway', () => {
         registrationTimeout: 0,
         idleTimeout: 2,
       });
-      gateway.stop();
+      await gateway.stop();
       gateway = new Gateway();
       gateway.start();
 
@@ -1001,7 +1001,7 @@ describe('Gateway', () => {
         registrationTimeout: 0,
         idleTimeout: 0,
       });
-      gateway.stop();
+      await gateway.stop();
       gateway = new Gateway();
       gateway.start();
 

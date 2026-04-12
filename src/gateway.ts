@@ -19,12 +19,15 @@
  * - encoding: Character encoding (default: utf8)
  */
 
-import { WebSocketServer } from 'ws';
+import { WebSocketServer, WebSocket } from 'ws';
 import { createServer } from 'node:http';
 import { getConfig } from './config.js';
 import { IdentdServer } from './identd.js';
 import { ClientManager } from './client-manager.js';
 import { ConnectionHandler } from './connection-handler.js';
+
+/** Maximum time to wait for in-flight sockets to drain during shutdown */
+const SHUTDOWN_DRAIN_TIMEOUT_MS = 5000;
 
 // ============================================================================
 // Gateway Class
@@ -62,6 +65,12 @@ export class Gateway {
     this.httpServer.on('upgrade', (request, socket, head) => {
       this.connectionHandler.handleWebSocketUpgrade(request, socket, head);
     });
+
+    // Surface listen errors (EADDRINUSE, EACCES, etc.) — without this, a
+    // failed bind resolves silently and the process looks healthy.
+    this.httpServer.on('error', (error: NodeJS.ErrnoException) => {
+      console.error(`[gateway] HTTP server error${error.code ? ` (${error.code})` : ''}: ${error.message}`);
+    });
   }
 
   // ==========================================================================
@@ -92,29 +101,91 @@ export class Gateway {
   }
 
   /**
-   * Stop the gateway server and disconnect all clients
+   * Stop the gateway server and disconnect all clients.
+   *
+   * Resolves after HTTP + WebSocket servers have closed. Clients are given
+   * a short drain window to flush in-flight sends (IRC ERROR, QUIT acks)
+   * before being forcibly terminated.
    */
-  stop(): void {
+  async stop(): Promise<void> {
     const config = getConfig();
 
-    // Disconnect all clients
-    for (const client of this.clientManager.getAllClients()) {
+    // Send QUIT to IRC and begin WebSocket close handshake for every client.
+    const clients = this.clientManager.getAllClients();
+    for (const client of clients) {
       if (client.ircClient) {
         client.ircClient.quit(config.quitMessage);
       }
-      client.webSocket.close();
+      if (client.webSocket.readyState === WebSocket.OPEN) {
+        client.webSocket.close();
+      }
     }
+
+    // Wait for clients to finish closing, with a hard timeout fallback.
+    // Without this, the WebSocketServer.close() call below can hang if any
+    // client has buffered data that hasn't flushed yet.
+    await this.waitForClientsToClose(clients, SHUTDOWN_DRAIN_TIMEOUT_MS);
 
     // Stop identd server
     if (this.identdServer) {
-      this.identdServer.stop();
+      await this.identdServer.stop();
       this.identdServer = null;
     }
 
     // Close servers
-    this.webSocketServer.close();
-    this.httpServer.close();
+    await new Promise<void>((resolve) => {
+      this.webSocketServer.close(() => resolve());
+    });
+    await new Promise<void>((resolve) => {
+      this.httpServer.close(() => resolve());
+    });
 
     console.log('Gateway stopped');
+  }
+
+  /**
+   * Wait for all provided clients' WebSockets to reach CLOSED state, or
+   * force-terminate any that miss the deadline. Returning without force-closing
+   * stragglers is worse: httpServer.close() hangs forever waiting for them.
+   */
+  private waitForClientsToClose(
+    clients: ReturnType<ClientManager['getAllClients']>,
+    timeoutMs: number
+  ): Promise<void> {
+    return new Promise((resolve) => {
+      const outstanding = clients.filter(
+        (c) => c.webSocket.readyState !== WebSocket.CLOSED
+      );
+      if (outstanding.length === 0) {
+        resolve();
+        return;
+      }
+
+      let remaining = outstanding.length;
+      let settled = false;
+      const done = (): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+
+      for (const client of outstanding) {
+        client.webSocket.once('close', () => {
+          remaining--;
+          if (remaining === 0) done();
+        });
+      }
+
+      const timer = setTimeout(() => {
+        // Deadline hit — force-terminate anything still open so close() below doesn't hang.
+        for (const client of outstanding) {
+          if (client.webSocket.readyState !== WebSocket.CLOSED) {
+            client.webSocket.terminate();
+          }
+        }
+        done();
+      }, timeoutMs);
+    });
   }
 }

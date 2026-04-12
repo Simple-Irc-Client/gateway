@@ -364,16 +364,56 @@ export class IrcClient extends BaseIrcClient {
   /**
    * Send a raw IRC command to the server
    *
-   * Automatically appends \r\n line terminator
+   * Automatically appends \r\n line terminator. Returns `true` if the socket
+   * drained the write synchronously, `false` when Node's internal buffer has
+   * filled and the caller should stop pushing data until the returned
+   * `'drain'` promise resolves. When the socket isn't writable at all,
+   * returns `false` without throwing.
    */
-  send(line: string): void {
-    if (this.socket?.writable) {
-      const encodedLine = this.encodeString(`${stripCRLF(line)}${IRC_LINE_ENDING}`);
-      this.socket.write(encodedLine);
+  send(line: string): boolean {
+    if (!this.socket?.writable) return false;
+    const encodedLine = this.encodeString(`${stripCRLF(line)}${IRC_LINE_ENDING}`);
+    const flushed = this.socket.write(encodedLine);
 
-      // Emit raw line for logging (isFromServer = false)
-      this.emit('raw', line, false);
+    // Emit raw line for logging (isFromServer = false)
+    this.emit('raw', line, false);
+
+    if (!flushed) {
+      this.emit('backpressure');
     }
+    return flushed;
+  }
+
+  /** True when the socket's internal write buffer still has headroom. */
+  get writable(): boolean {
+    return this.socket?.writable ?? false;
+  }
+
+  /**
+   * Wait for the socket to drain after a `send()` returned false. Rejects
+   * if the socket closes before draining.
+   */
+  waitForDrain(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (!this.socket) {
+        reject(new Error('Socket closed'));
+        return;
+      }
+      if (this.socket.writableNeedDrain === false) {
+        resolve();
+        return;
+      }
+      const onDrain = (): void => {
+        this.socket?.off('close', onClose);
+        resolve();
+      };
+      const onClose = (): void => {
+        this.socket?.off('drain', onDrain);
+        reject(new Error('Socket closed before drain'));
+      };
+      this.socket.once('drain', onDrain);
+      this.socket.once('close', onClose);
+    });
   }
 
   /**
@@ -409,6 +449,20 @@ export class IrcClient extends BaseIrcClient {
     }
 
     this.stopPingTimer();
+  }
+
+  /**
+   * Pause reads from the IRC server so TCP-level flow control can slow the
+   * upstream down. Used by the gateway when a downstream WebSocket client is
+   * falling behind, to avoid unbounded buffering inside the gateway process.
+   */
+  pause(): void {
+    this.socket?.pause();
+  }
+
+  /** Resume reads from the IRC server after a pause(). */
+  resume(): void {
+    this.socket?.resume();
   }
 
   /**

@@ -86,9 +86,10 @@ export abstract class BaseIrcClient extends EventEmitter {
   abstract connectRaw(options: IrcRawConnectionOptions): void;
 
   /**
-   * Send a raw IRC command to the server
+   * Send a raw IRC command to the server. Returns true if the socket drained
+   * the write synchronously, false when the caller should wait for drain.
    */
-  abstract send(line: string): void;
+  abstract send(line: string): boolean;
 
   /**
    * Send QUIT command and gracefully close the connection

@@ -216,8 +216,11 @@ export class IdentdServer {
       return;
     }
 
-    // Race condition mitigation: wait and retry once
-    setTimeout(() => {
+    // Race condition mitigation: wait and retry once. The client may close
+    // its end of the socket in the meantime — guard respond() with a
+    // destroyed check so we don't write into the void and surface EPIPE.
+    const retryTimer = setTimeout(() => {
+      if (socket.destroyed) return;
       const retryUsername = this.lookup(localPort, remotePort, normalizedRemote);
       if (retryUsername) {
         console.info(`[identd] USER for ${this.makeKey(localPort, remotePort, normalizedRemote)}`);
@@ -227,6 +230,9 @@ export class IdentdServer {
         this.respond(socket, portPair, 'ERROR : NO-USER');
       }
     }, RETRY_DELAY_MS);
+
+    // Cancel the retry if the socket closes before it fires.
+    socket.once('close', () => clearTimeout(retryTimer));
   }
 
   private lookup(localPort: number, remotePort: number, remoteHost: string): string | null {
