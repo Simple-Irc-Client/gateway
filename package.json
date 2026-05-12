@@ -13,25 +13,25 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
-  "packageManager": "pnpm@10.33.0",
+  "packageManager": "pnpm@11.1.1",
   "engines": {
     "node": ">=20.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@stylistic/eslint-plugin": "^5.10.0",
-    "@types/node": "^25.5.0",
+    "@types/node": "^25.7.0",
     "@types/ws": "^8.18.1",
-    "esbuild": "^0.27.4",
-    "eslint": "^10.1.0",
+    "esbuild": "^0.28.0",
+    "eslint": "^10.3.0",
     "eslint-config-prettier": "^10.1.8",
     "tsx": "^4.21.0",
-    "typescript": "^6.0.2",
-    "typescript-eslint": "^8.58.0",
-    "vitest": "^4.1.2"
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.59.3",
+    "vitest": "^4.1.6"
   },
   "dependencies": {
     "iconv-lite": "^0.7.2",
-    "ws": "^8.20.0"
+    "ws": "^8.20.1"
   }
 }
