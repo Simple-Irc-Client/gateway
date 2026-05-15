@@ -48,7 +48,7 @@ import {
  * - 'connected': IRC registration complete (received 001)
  * - 'close': Connection closed
  * - 'error': Connection error occurred
- * - 'raw': Raw IRC message (line: string, isFromServer: boolean)
+ * - 'raw': Raw IRC message (line: string, inbound: boolean)
  */
 export class IrcClient extends BaseIrcClient {
   /** TCP or TLS socket connection */
@@ -375,7 +375,7 @@ export class IrcClient extends BaseIrcClient {
     const encodedLine = this.encodeString(`${stripCRLF(line)}${IRC_LINE_ENDING}`);
     const flushed = this.socket.write(encodedLine);
 
-    // Emit raw line for logging (isFromServer = false)
+    // Emit raw line for logging (inbound = false)
     this.emit('raw', line, false);
 
     if (!flushed) {

@@ -128,7 +128,7 @@ describe('IrcClient', () => {
 
     await new Promise((r) => setTimeout(r, 50));
 
-    // Check that raw events were emitted for outgoing messages (fromServer = false)
+    // Check that raw events were emitted for outgoing messages (inbound = false)
     expect(onRaw).toHaveBeenCalledWith(expect.stringContaining('NICK'), false);
   });
 
@@ -336,7 +336,7 @@ describe('IrcClient line parsing', () => {
 
     // Line not complete yet
     const callsWithNotice = onRaw.mock.calls.filter(
-      ([line, fromServer]) => fromServer && line.includes('NOTICE')
+      ([line, inbound]) => inbound && line.includes('NOTICE')
     );
     expect(callsWithNotice.length).toBe(0);
 
@@ -429,7 +429,7 @@ describe('IrcClient send() return value and backpressure', () => {
     await new Promise((r) => setTimeout(r, 50));
 
     const pausedCalls = onRaw.mock.calls.filter(
-      ([line, fromServer]) => fromServer && (line as string).includes('while-paused')
+      ([line, inbound]) => inbound && (line as string).includes('while-paused')
     );
     expect(pausedCalls.length).toBe(0);
 
@@ -437,7 +437,7 @@ describe('IrcClient send() return value and backpressure', () => {
     await new Promise((r) => setTimeout(r, 50));
 
     const resumedCalls = onRaw.mock.calls.filter(
-      ([line, fromServer]) => fromServer && (line as string).includes('while-paused')
+      ([line, inbound]) => inbound && (line as string).includes('while-paused')
     );
     expect(resumedCalls.length).toBe(1);
   });

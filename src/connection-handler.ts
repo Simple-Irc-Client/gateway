@@ -325,8 +325,8 @@ export class ConnectionHandler {
     });
 
     // Raw IRC message from server - forward to client
-    ircClient.on('raw', (line: string, isFromServer: boolean) => {
-      if (isFromServer) {
+    ircClient.on('raw', (line: string, inbound: boolean) => {
+      if (inbound) {
         // console.debug(`[${client.id}] >> ${line}`);
 
         // Reset idle timeout on meaningful server traffic (not PING/PONG)
