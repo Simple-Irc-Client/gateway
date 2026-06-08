@@ -62,8 +62,12 @@ elif [ ! -s "${DEPLOY_HOME}/.ssh/authorized_keys" ]; then
 fi
 
 # --- app dir (deploy-owned: firewall script + .env live here, no sudo needed) ---
+# chown -R so a server migrating from the old root-based deploy (where this dir and
+# its files were root-owned) hands full ownership to the deploy user, not just the dir.
 echo "Ensuring ${APP_DIR} exists (owned by ${DEPLOY_USER})..."
-install -d -m 755 -o "$DEPLOY_USER" -g "$DEPLOY_USER" "$APP_DIR"
+mkdir -p "$APP_DIR"
+chown -R "$DEPLOY_USER:$DEPLOY_USER" "$APP_DIR"
+chmod 755 "$APP_DIR"
 
 # --- scoped sudo ---
 echo "Writing scoped sudoers to ${SUDOERS_FILE}..."
