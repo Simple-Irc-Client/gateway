@@ -83,6 +83,22 @@ server {
 }
 ```
 
+### Automated Deployment (GitHub Actions)
+
+CI deploys via a non-privileged `deploy` user with scoped `sudo` — it never logs in as
+root. Provision the server **once** as root:
+
+```bash
+# from a checkout of this repo on the server (or after scp-ing the deploy/ dir)
+sudo DEPLOY_PUBKEY="$(cat deploy_key.pub)" bash deploy/bootstrap.sh
+```
+
+`bootstrap.sh` creates the `deploy` user, installs its SSH key, installs podman + caddy,
+creates `/opt/sic-gateway` (deploy-owned), and writes a scoped `/etc/sudoers.d/sic-deploy`
+granting only the binaries deploys need (`systemctl`, `podman`, `nft`, `apt-get`, `tee`,
+the firewall script). The private half of `DEPLOY_PUBKEY` is the GitHub Actions `SSH_KEY`
+secret. Re-run `bootstrap.sh` (as root) after changing the package set or sudoers scope.
+
 ## Environment Variables
 
 | Variable | Default | Description |

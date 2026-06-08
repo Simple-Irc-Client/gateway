@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
 
+env:
+  DEPLOY_USER: deploy
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -47,11 +50,9 @@ jobs:
         env:
           SSH_KEY: ${{ secrets.SSH_KEY }}
           SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_PASS: ${{ secrets.SSH_PASS }}
         run: |
           if [ -z "$SSH_KEY" ]; then echo "ERROR: SSH_KEY is not set"; exit 1; fi
           if [ -z "$SSH_HOST" ]; then echo "ERROR: SSH_HOST is not set"; exit 1; fi
-          if [ -z "$SSH_PASS" ]; then echo "ERROR: SSH_PASS is not set"; exit 1; fi
           echo "All secrets are set"
 
           mkdir -p ~/.ssh
@@ -59,30 +60,15 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
-          eval "$(ssh-agent -s)"
-          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
-          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
-
-          ASKPASS_SCRIPT=$(mktemp)
-          echo '#!/bin/sh' > "$ASKPASS_SCRIPT"
-          echo "echo \"\$SSH_PASS\"" >> "$ASKPASS_SCRIPT"
-          chmod +x "$ASKPASS_SCRIPT"
-          SSH_ASKPASS="$ASKPASS_SCRIPT" SSH_ASKPASS_REQUIRE=force ssh-add ~/.ssh/deploy_key
-          rm -f "$ASKPASS_SCRIPT"
-          echo "SSH key added to agent"
-
-      - name: Ensure podman is installed on server
-        env:
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-        run: |
-          ssh root@$SSH_HOST 'if ! command -v podman &> /dev/null; then
-            echo "Podman not found, installing..."
-            apt-get update
-            apt-get install -y podman
-            echo "Podman installed"
-          else
-            echo "Podman already installed, skipping"
-          fi'
+          # Use the deploy key for all ssh/scp calls to this host (no agent needed —
+          # the key has no passphrase).
+          cat >> ~/.ssh/config << EOF
+          Host $SSH_HOST
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+          EOF
+          chmod 600 ~/.ssh/config
+          echo "SSH key configured"
 
       - name: Deploy container
         env:
@@ -90,34 +76,36 @@ jobs:
         run: |
           IMAGE="docker.io/simpleircclient/simple-irc-gateway:${{ github.sha }}"
 
-          ssh root@$SSH_HOST "podman pull $IMAGE"
+          ssh $DEPLOY_USER@$SSH_HOST "sudo podman pull $IMAGE"
           echo "Image pulled"
 
           echo "Removing stale Quadlet service if present..."
-          ssh root@$SSH_HOST "
+          ssh $DEPLOY_USER@$SSH_HOST "
             if systemctl list-unit-files container-sic-gateway.service &>/dev/null; then
-              systemctl stop container-sic-gateway.service 2>/dev/null || true
-              systemctl disable container-sic-gateway.service 2>/dev/null || true
+              sudo systemctl stop container-sic-gateway.service 2>/dev/null || true
+              sudo systemctl disable container-sic-gateway.service 2>/dev/null || true
             fi
-            rm -f /etc/containers/systemd/sic-gateway.container
-            systemctl daemon-reload
+            sudo rm -f /etc/containers/systemd/sic-gateway.container
+            sudo systemctl daemon-reload
           "
           echo "Quadlet cleanup done"
 
           echo "Deploying systemd service..."
-          scp deploy/sic-gateway.service root@$SSH_HOST:/etc/systemd/system/sic-gateway.service
-          ssh root@$SSH_HOST "sed -i 's|IMAGE_PLACEHOLDER|$IMAGE|' /etc/systemd/system/sic-gateway.service"
-          ssh root@$SSH_HOST "systemctl daemon-reload && systemctl enable sic-gateway.service"
+          # Substitute the image locally and pipe the final unit straight to the
+          # protected path via sudo tee (no scp-to-/etc, no sudo sed).
+          sed "s|IMAGE_PLACEHOLDER|$IMAGE|" deploy/sic-gateway.service \
+            | ssh $DEPLOY_USER@$SSH_HOST "sudo tee /etc/systemd/system/sic-gateway.service" >/dev/null
+          ssh $DEPLOY_USER@$SSH_HOST "sudo systemctl daemon-reload && sudo systemctl enable sic-gateway.service"
           echo "Service deployed"
 
           echo "Restarting service..."
-          ssh root@$SSH_HOST "systemctl restart sic-gateway.service"
+          ssh $DEPLOY_USER@$SSH_HOST "sudo systemctl restart sic-gateway.service"
           echo "Service restarted"
 
           sleep 5
-          ssh root@$SSH_HOST "systemctl is-active sic-gateway.service" || {
+          ssh $DEPLOY_USER@$SSH_HOST "sudo systemctl is-active sic-gateway.service" || {
             echo "ERROR: sic-gateway service is not active"
-            ssh root@$SSH_HOST "journalctl -u sic-gateway.service --no-pager -n 50"
+            ssh $DEPLOY_USER@$SSH_HOST "sudo journalctl -u sic-gateway.service --no-pager -n 50"
             exit 1
           }
           echo "Service is running"
@@ -126,35 +114,9 @@ jobs:
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
         run: |
-          ssh root@$SSH_HOST 'if ! command -v caddy &> /dev/null; then
-            echo "Caddy not found, installing..."
-            apt-get update
-            apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl
-            curl -1sLf "https://dl.cloudsmith.io/public/caddy/stable/gpg.key" | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-            curl -1sLf "https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt" | tee /etc/apt/sources.list.d/caddy-stable.list
-            apt-get update
-            apt-get install -y caddy
-            echo "Caddy installed"
-          else
-            echo "Caddy already installed, skipping"
-          fi'
-
-          ssh root@$SSH_HOST 'if [ ! -f /etc/caddy/Caddyfile ]; then
-            mkdir -p /etc/caddy
-            cat > /etc/caddy/Caddyfile << "CADDYFILE"
-          irc.simpleircclient.com {
-              reverse_proxy 127.0.0.1:8667 {
-                transport http {
-                  versions 1.1
-                }
-              }
-          }
-          CADDYFILE
-            systemctl reload caddy
-            echo "Caddyfile created and Caddy reloaded"
-          else
-            echo "Caddyfile already exists, skipping"
-          fi'
+          ssh $DEPLOY_USER@$SSH_HOST "sudo tee /etc/caddy/Caddyfile" < deploy/Caddyfile >/dev/null
+          ssh $DEPLOY_USER@$SSH_HOST "sudo systemctl reload caddy"
+          echo "Caddyfile deployed and Caddy reloaded"
 
       - name: Deploy firewall script and cronjob
         env:
@@ -163,22 +125,23 @@ jobs:
           HCLOUD_FIREWALL: ${{ secrets.HCLOUD_FIREWALL }}
         run: |
           echo "Deploying firewall script..."
-          ssh root@$SSH_HOST "mkdir -p /opt/sic-gateway"
-          scp deploy/update-firewall.sh root@$SSH_HOST:/opt/sic-gateway/update-firewall.sh
-          ssh root@$SSH_HOST "chmod +x /opt/sic-gateway/update-firewall.sh"
+          # /opt/sic-gateway is owned by the deploy user (created by bootstrap.sh),
+          # so the script and env file are written without sudo.
+          scp deploy/update-firewall.sh $DEPLOY_USER@$SSH_HOST:/opt/sic-gateway/update-firewall.sh
+          ssh $DEPLOY_USER@$SSH_HOST "chmod +x /opt/sic-gateway/update-firewall.sh"
           echo "Firewall script deployed"
 
           echo "Writing firewall env file..."
-          ssh root@$SSH_HOST "printf '%s\n' 'HCLOUD_TOKEN=$HCLOUD_TOKEN' 'HCLOUD_FIREWALL=$HCLOUD_FIREWALL' > /opt/sic-gateway/.env && chmod 600 /opt/sic-gateway/.env"
+          ssh $DEPLOY_USER@$SSH_HOST "printf '%s\n' 'HCLOUD_TOKEN=$HCLOUD_TOKEN' 'HCLOUD_FIREWALL=$HCLOUD_FIREWALL' > /opt/sic-gateway/.env && chmod 600 /opt/sic-gateway/.env"
           echo "Env file written"
 
           echo "Running firewall update..."
-          ssh root@$SSH_HOST "/opt/sic-gateway/update-firewall.sh"
+          ssh $DEPLOY_USER@$SSH_HOST "sudo /opt/sic-gateway/update-firewall.sh"
           echo "Firewall updated"
 
           echo "Setting up firewall cronjob..."
-          ssh root@$SSH_HOST "
-            CRON_CMD=\"0 */6 * * * /opt/sic-gateway/update-firewall.sh >> /var/log/update-firewall.log 2>&1\"
+          ssh $DEPLOY_USER@$SSH_HOST "
+            CRON_CMD=\"0 */6 * * * sudo /opt/sic-gateway/update-firewall.sh >> /opt/sic-gateway/update-firewall.log 2>&1\"
             crontab -l 2>/dev/null | grep -v 'update-firewall' | { cat; echo \"\$CRON_CMD\"; } | crontab -
           "
           echo "Cronjob configured"
@@ -189,13 +152,13 @@ jobs:
           HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
           HCLOUD_FIREWALL: ${{ secrets.HCLOUD_FIREWALL }}
         run: |
-          ssh root@$SSH_HOST "crontab -l" | grep -q "update-firewall" || {
+          ssh $DEPLOY_USER@$SSH_HOST "crontab -l" | grep -q "update-firewall" || {
             echo "ERROR: Firewall cronjob is missing"
             exit 1
           }
           echo "Firewall cronjob verified"
 
-          ssh root@$SSH_HOST "nft list table inet sic-firewall" >/dev/null || {
+          ssh $DEPLOY_USER@$SSH_HOST "sudo nft list table inet sic-firewall" >/dev/null || {
             echo "ERROR: nftables sic-firewall table missing"
             exit 1
           }
