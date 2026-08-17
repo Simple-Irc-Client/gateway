@@ -70,6 +70,20 @@ jobs:
           chmod 600 ~/.ssh/config
           echo "SSH key configured"
 
+      - name: Verify deploy user is provisioned
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        run: |
+          if ! ssh $DEPLOY_USER@$SSH_HOST "true" 2>/tmp/deploy-user-check.err; then
+            echo "ERROR: could not log in as '$DEPLOY_USER'@$SSH_HOST." >&2
+            cat /tmp/deploy-user-check.err >&2
+            echo "" >&2
+            echo "This server has not been bootstrapped yet. Run once, as root on the server:" >&2
+            echo "  sudo DEPLOY_PUBKEY=\"<public half of the SSH_KEY secret>\" bash deploy/bootstrap.sh" >&2
+            exit 1
+          fi
+          echo "'$DEPLOY_USER' user is provisioned on $SSH_HOST"
+
       - name: Deploy container
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
