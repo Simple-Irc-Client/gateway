@@ -25,10 +25,22 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # --- packages ---
-echo "Installing packages (podman, caddy)..."
+echo "Installing packages (podman, jq, nftables, python3, caddy)..."
 if ! command -v podman >/dev/null 2>&1; then
     apt-get update
     apt-get install -y podman
+fi
+if ! command -v jq >/dev/null 2>&1; then
+    apt-get update
+    apt-get install -y jq
+fi
+if ! command -v nft >/dev/null 2>&1; then
+    apt-get update
+    apt-get install -y nftables
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+    apt-get update
+    apt-get install -y python3
 fi
 if ! command -v caddy >/dev/null 2>&1; then
     apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl
