@@ -1,376 +1,38 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { IrcClient } from './irc-client.js';
-import { createServer, Server } from 'node:net';
+import { createServer, type Server, type Socket } from 'node:net';
+import { IrcClient, ircCommand, type IrcClientOptions } from './irc-client.js';
+import { privateAddressGuard } from './security.js';
+
+const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 describe('IrcClient', () => {
   let client: IrcClient;
   let server: Server;
-  let serverPort: number;
-  let receivedData: string[] = [];
-
-  beforeEach(async () => {
-    client = new IrcClient();
-    receivedData = [];
-
-    // Create a simple TCP server to test against
-    server = createServer((socket) => {
-      socket.on('data', (data) => {
-        receivedData.push(data.toString());
-      });
-    });
-
-    await new Promise<void>((resolve) => {
-      server.listen(0, '127.0.0.1', () => {
-        const addr = server.address();
-        serverPort = typeof addr === 'object' && addr !== null ? addr.port : 0;
-        resolve();
-      });
-    });
-  });
-
-  afterEach(async () => {
-    client.destroy();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-  });
-
-  it('emits socket connected on connect', async () => {
-    const onConnect = vi.fn();
-    client.on('socket connected', onConnect);
-
-    client.connect({ host: '127.0.0.1', port: serverPort, nick: 'testnick' });
-
-    await new Promise((r) => setTimeout(r, 50));
-    expect(onConnect).toHaveBeenCalled();
-  });
-
-  it('sends CAP, NICK and USER on connect', async () => {
-    client.connect({ host: '127.0.0.1', port: serverPort, nick: 'testnick' });
-
-    await new Promise((r) => setTimeout(r, 50));
-    const allData = receivedData.join('');
-
-    expect(allData).toContain('CAP LS 302');
-    expect(allData).toContain('NICK testnick');
-    expect(allData).toContain('USER testnick');
-  });
-
-  it('sends CAP END after receiving final CAP LS response', async () => {
-    const received: string[] = [];
-
-    server.once('connection', (socket) => {
-      socket.on('data', (d) => received.push(d.toString()));
-      // Send CAP LS response after client connects
-      setTimeout(() => socket.write(':ergo.test CAP * LS :batch chathistory\r\n'), 30);
-    });
-
-    client.connect({ host: '127.0.0.1', port: serverPort, nick: 'testnick' });
-    await new Promise((r) => setTimeout(r, 100));
-
-    expect(received.join('')).toContain('CAP END');
-  });
-
-  it('sends CAP END only after final line of multiline CAP LS', async () => {
-    const received: string[] = [];
-
-    server.once('connection', (socket) => {
-      socket.on('data', (d) => received.push(d.toString()));
-      setTimeout(() => {
-        socket.write(':ergo.test CAP * LS * :batch chathistory\r\n');
-        socket.write(':ergo.test CAP * LS :message-tags\r\n');
-      }, 30);
-    });
-
-    client.connect({ host: '127.0.0.1', port: serverPort, nick: 'testnick' });
-    await new Promise((r) => setTimeout(r, 100));
-
-    const allData = received.join('');
-    expect(allData).toContain('CAP END');
-    // Only sent once
-    expect(allData.split('CAP END').length - 1).toBe(1);
-  });
-
-  it('sends PASS when password provided', async () => {
-    client.connect({ host: '127.0.0.1', port: serverPort, nick: 'testnick', password: 'secret' });
-
-    await new Promise((r) => setTimeout(r, 50));
-    const allData = receivedData.join('');
-
-    expect(allData).toContain('PASS secret');
-  });
-
-  it('skips WEBIRC and emits error on non-TLS connection', async () => {
-    const onError = vi.fn();
-    client.on('error', onError);
-
-    client.connect({
-      host: '127.0.0.1',
-      port: serverPort,
-      nick: 'testnick',
-      webirc: { password: 'webircpass', gateway: 'mygateway', hostname: '1.2.3.4.web', ip: '1.2.3.4' },
-    });
-
-    await new Promise((r) => setTimeout(r, 50));
-    const allData = receivedData.join('');
-
-    // WEBIRC should NOT be sent over non-TLS
-    expect(allData).not.toContain('WEBIRC');
-    // Error should be emitted
-    expect(onError).toHaveBeenCalledWith(
-      expect.objectContaining({ message: expect.stringContaining('TLS') })
-    );
-  });
-
-  it('emits raw events for outgoing lines', async () => {
-    const onRaw = vi.fn();
-    client.on('raw', onRaw);
-
-    client.connect({ host: '127.0.0.1', port: serverPort, nick: 'testnick' });
-
-    await new Promise((r) => setTimeout(r, 50));
-
-    // Check that raw events were emitted for outgoing messages (inbound = false)
-    expect(onRaw).toHaveBeenCalledWith(expect.stringContaining('NICK'), false);
-  });
-
-  it('reports connected status', async () => {
-    expect(client.connected).toBe(false);
-
-    client.connect({ host: '127.0.0.1', port: serverPort, nick: 'testnick' });
-    await new Promise((r) => setTimeout(r, 50));
-
-    expect(client.connected).toBe(true);
-  });
-
-  it('sends QUIT on quit()', async () => {
-    client.connect({ host: '127.0.0.1', port: serverPort, nick: 'testnick' });
-    await new Promise((r) => setTimeout(r, 50));
-
-    receivedData = [];
-    client.quit('Goodbye');
-
-    await new Promise((r) => setTimeout(r, 50));
-    const allData = receivedData.join('');
-
-    expect(allData).toContain('QUIT :Goodbye');
-  });
-
-  it('sends raw messages via send()', async () => {
-    client.connect({ host: '127.0.0.1', port: serverPort, nick: 'testnick' });
-    await new Promise((r) => setTimeout(r, 50));
-
-    receivedData = [];
-    client.send('PRIVMSG #test :Hello');
-
-    await new Promise((r) => setTimeout(r, 50));
-    const allData = receivedData.join('');
-
-    expect(allData).toContain('PRIVMSG #test :Hello');
-  });
-
-  it('emits close on disconnect', async () => {
-    const onClose = vi.fn();
-    client.on('close', onClose);
-
-    client.connect({ host: '127.0.0.1', port: serverPort, nick: 'testnick' });
-    await new Promise((r) => setTimeout(r, 50));
-
-    client.destroy();
-    await new Promise((r) => setTimeout(r, 50));
-
-    expect(onClose).toHaveBeenCalled();
-  });
-});
-
-describe('IrcClient line parsing', () => {
-  let client: IrcClient;
-  let server: Server;
-  let serverPort: number;
-  let serverSocket: import('net').Socket | null = null;
-
-  beforeEach(async () => {
-    client = new IrcClient();
-
-    server = createServer((socket) => {
-      serverSocket = socket;
-    });
-
-    await new Promise<void>((resolve) => {
-      server.listen(0, '127.0.0.1', () => {
-        const addr = server.address();
-        serverPort = typeof addr === 'object' && addr !== null ? addr.port : 0;
-        resolve();
-      });
-    });
-  });
-
-  afterEach(async () => {
-    client.destroy();
-    serverSocket?.destroy();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-  });
-
-  it('emits raw events for incoming lines', async () => {
-    const onRaw = vi.fn();
-    client.on('raw', onRaw);
-
-    client.connect({ host: '127.0.0.1', port: serverPort, nick: 'testnick' });
-    await new Promise((r) => setTimeout(r, 50));
-
-    serverSocket?.write(':server NOTICE * :Hello\r\n');
-    await new Promise((r) => setTimeout(r, 50));
-
-    expect(onRaw).toHaveBeenCalledWith(':server NOTICE * :Hello', true);
-  });
-
-  it('responds to PING with PONG', async () => {
-    client.connect({ host: '127.0.0.1', port: serverPort, nick: 'testnick' });
-    await new Promise((r) => setTimeout(r, 50));
-
-    const received: string[] = [];
-    serverSocket?.on('data', (d) => received.push(d.toString()));
-
-    serverSocket?.write('PING :server123\r\n');
-    await new Promise((r) => setTimeout(r, 50));
-
-    expect(received.join('')).toContain('PONG :server123');
-  });
-
-  it('emits connected on 001 numeric', async () => {
-    const onConnected = vi.fn();
-    client.on('connected', onConnected);
-
-    client.connect({ host: '127.0.0.1', port: serverPort, nick: 'testnick' });
-    await new Promise((r) => setTimeout(r, 50));
-
-    serverSocket?.write(':server 001 testnick :Welcome\r\n');
-    await new Promise((r) => setTimeout(r, 50));
-
-    expect(onConnected).toHaveBeenCalled();
-  });
-
-  it('emits connected on IRCv3 tagged 001 numeric', async () => {
-    const onConnected = vi.fn();
-    client.on('connected', onConnected);
-
-    client.connect({ host: '127.0.0.1', port: serverPort, nick: 'testnick' });
-    await new Promise((r) => setTimeout(r, 50));
-
-    serverSocket?.write('@time=2026-02-01T00:07:46.552Z :lead.libera.chat 001 testnick :Welcome\r\n');
-    await new Promise((r) => setTimeout(r, 50));
-
-    expect(onConnected).toHaveBeenCalled();
-  });
-
-  it('does not emit connected on user message containing 001', async () => {
-    const onConnected = vi.fn();
-    client.on('connected', onConnected);
-
-    client.connect({ host: '127.0.0.1', port: serverPort, nick: 'testnick' });
-    await new Promise((r) => setTimeout(r, 50));
-
-    // User message with 001 in it should NOT trigger connected
-    serverSocket?.write(':nick!user@host PRIVMSG #channel :error 001 happened\r\n');
-    await new Promise((r) => setTimeout(r, 50));
-
-    expect(onConnected).not.toHaveBeenCalled();
-  });
-
-  it('destroys connection when receive buffer exceeds 2MB', async () => {
-    const onClose = vi.fn();
-    const onError = vi.fn();
-    client.on('close', onClose);
-    client.on('error', onError);
-
-    client.connect({ host: '127.0.0.1', port: serverPort, nick: 'testnick' });
-    await new Promise((r) => setTimeout(r, 50));
-
-    // Absorb ECONNRESET on the server socket when client destroys connection
-    // eslint-disable-next-line @typescript-eslint/no-empty-function
-    serverSocket?.on('error', () => {});
-
-    // Send 2.1MB of data without line terminators to overflow the buffer
-    const bigData = Buffer.alloc(2.1 * 1024 * 1024, 0x41);
-    serverSocket?.write(bigData);
-
-    await new Promise((r) => setTimeout(r, 100));
-
-    expect(onClose).toHaveBeenCalled();
-  });
-
-  it('handles data within buffer limits without disconnecting', async () => {
-    const onRaw = vi.fn();
-    const onClose = vi.fn();
-    client.on('raw', onRaw);
-    client.on('close', onClose);
-
-    client.connect({ host: '127.0.0.1', port: serverPort, nick: 'testnick' });
-    await new Promise((r) => setTimeout(r, 50));
-
-    onRaw.mockClear();
-
-    // Send data within limits with proper line terminator
-    const message = ':server NOTICE * :' + 'A'.repeat(500) + '\r\n';
-    serverSocket?.write(message);
-
-    await new Promise((r) => setTimeout(r, 50));
-
-    expect(onRaw).toHaveBeenCalledWith(
-      expect.stringContaining('NOTICE'),
-      true
-    );
-    expect(onClose).not.toHaveBeenCalled();
-  });
-
-  it('handles partial lines correctly', async () => {
-    const onRaw = vi.fn();
-    client.on('raw', onRaw);
-
-    client.connect({ host: '127.0.0.1', port: serverPort, nick: 'testnick' });
-    await new Promise((r) => setTimeout(r, 50));
-
-    onRaw.mockClear();
-
-    // Send partial line
-    serverSocket?.write(':server NOTICE');
-    await new Promise((r) => setTimeout(r, 20));
-
-    // Line not complete yet
-    const callsWithNotice = onRaw.mock.calls.filter(
-      ([line, inbound]) => inbound && line.includes('NOTICE')
-    );
-    expect(callsWithNotice.length).toBe(0);
-
-    // Complete the line
-    serverSocket?.write(' * :Hello\r\n');
-    await new Promise((r) => setTimeout(r, 20));
-
-    expect(onRaw).toHaveBeenCalledWith(':server NOTICE * :Hello', true);
-  });
-});
-
-describe('IrcClient send() return value and backpressure', () => {
-  let client: IrcClient;
-  let server: Server;
-  let serverPort: number;
-  let serverSocket: import('net').Socket | null = null;
+  let serverSocket: Socket | null;
+  let receivedBytes: Buffer;
+  let received: string;
+  let options: IrcClientOptions;
 
   beforeEach(async () => {
     client = new IrcClient();
     serverSocket = null;
+    receivedBytes = Buffer.alloc(0);
+    received = '';
 
     server = createServer((socket) => {
       serverSocket = socket;
-      // eslint-disable-next-line @typescript-eslint/no-empty-function
-      socket.on('error', () => {});
-    });
-
-    await new Promise<void>((resolve) => {
-      server.listen(0, '127.0.0.1', () => {
-        const addr = server.address();
-        serverPort = typeof addr === 'object' && addr !== null ? addr.port : 0;
-        resolve();
+      socket.on('data', (data: Buffer) => {
+        receivedBytes = Buffer.concat([receivedBytes, data]);
+        received = receivedBytes.toString();
       });
+      // The client may reset the connection
+      socket.on('error', () => undefined);
     });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+
+    const address = server.address();
+    const port = typeof address === 'object' && address !== null ? address.port : 0;
+    options = { host: '127.0.0.1', port, tls: false, encoding: 'utf8', pongTimeout: 120 };
   });
 
   afterEach(async () => {
@@ -379,66 +41,191 @@ describe('IrcClient send() return value and backpressure', () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 
-  it('send() returns false when socket is not writable', () => {
-    const result = client.send('PING test');
-    expect(result).toBe(false);
+  const connect = async (overrides: Partial<IrcClientOptions> = {}): Promise<void> => {
+    client.connect({ ...options, ...overrides });
+    await wait(50);
+  };
+
+  describe('connecting', () => {
+    it('emits socket connected with the socket ports', async () => {
+      const onConnected = vi.fn();
+      client.on('socket connected', onConnected);
+
+      await connect();
+
+      expect(onConnected).toHaveBeenCalledWith(expect.objectContaining({ remotePort: options.port, remoteAddress: '127.0.0.1' }));
+    });
+
+    it('sends nothing on its own; the browser registers itself', async () => {
+      await connect();
+      expect(received).toBe('');
+    });
+
+    it('sends WEBIRC as the first line', async () => {
+      await connect({ webirc: { password: 'secret', gateway: 'gw', hostname: '1.2.3.4.web', ip: '1.2.3.4' } });
+      expect(received).toBe('WEBIRC secret gw 1.2.3.4.web 1.2.3.4\r\n');
+    });
+
+    it('refuses a host that resolves to a private address', async () => {
+      const onError = vi.fn();
+      const onConnected = vi.fn();
+      client.on('error', onError);
+      client.on('socket connected', onConnected);
+
+      await connect({ host: 'localhost', lookup: privateAddressGuard });
+
+      expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('private address') }));
+      expect(onConnected).not.toHaveBeenCalled();
+    });
+
+    it('emits close when the connection ends', async () => {
+      const onClose = vi.fn();
+      client.on('close', onClose);
+
+      await connect();
+      client.destroy();
+      await wait(50);
+
+      expect(onClose).toHaveBeenCalled();
+    });
   });
 
-  it('send() returns true when socket has buffer space', async () => {
-    client.connectRaw({ host: '127.0.0.1', port: serverPort });
-    await new Promise((r) => setTimeout(r, 50));
+  describe('sending', () => {
+    it('terminates lines with CRLF and strips embedded line breaks', async () => {
+      await connect();
+      client.send('PRIVMSG #test :Hello\r\nQUIT');
+      await wait(50);
 
-    const result = client.send('PING test');
-    expect(result).toBe(true);
+      expect(received).toBe('PRIVMSG #test :HelloQUIT\r\n');
+    });
+
+    it('encodes with the connection encoding', async () => {
+      await connect({ encoding: 'iso-8859-2' });
+      client.send('PRIVMSG #test :zażółć');
+      await wait(50);
+
+      expect(receivedBytes).toEqual(Buffer.from([...Buffer.from('PRIVMSG #test :za'), 0xbf, 0xf3, 0xb3, 0xe6, 0x0d, 0x0a]));
+    });
+
+    it('sends QUIT with the message on quit()', async () => {
+      await connect();
+      client.quit('Goodbye');
+      await wait(50);
+
+      expect(received).toContain('QUIT :Goodbye\r\n');
+    });
+
+    it('returns false while not connected', () => {
+      expect(client.send('PING test')).toBe(false);
+      expect(client.writable).toBe(false);
+    });
+
+    it('returns true while the socket has buffer space', async () => {
+      await connect();
+      expect(client.send('PING test')).toBe(true);
+      expect(client.writable).toBe(true);
+    });
   });
 
-  it('writable getter reflects socket state', async () => {
-    expect(client.writable).toBe(false);
+  describe('receiving', () => {
+    const collectLines = (): string[] => {
+      const lines: string[] = [];
+      client.on('line', (line) => lines.push(line));
+      return lines;
+    };
 
-    client.connectRaw({ host: '127.0.0.1', port: serverPort });
-    await new Promise((r) => setTimeout(r, 50));
+    it('emits each received line without its terminator', async () => {
+      const lines = collectLines();
+      await connect();
 
-    expect(client.writable).toBe(true);
+      serverSocket?.write(':server NOTICE * :Hello\r\n:server NOTICE * :Again\r\n');
+      await wait(50);
 
-    client.destroy();
-    expect(client.writable).toBe(false);
+      expect(lines).toEqual([':server NOTICE * :Hello', ':server NOTICE * :Again']);
+    });
+
+    it('accepts lines ending in a bare LF', async () => {
+      const lines = collectLines();
+      await connect();
+
+      serverSocket?.write(':server NOTICE * :one\n:server NOTICE * :two\n');
+      await wait(50);
+
+      expect(lines).toEqual([':server NOTICE * :one', ':server NOTICE * :two']);
+    });
+
+    it('waits for the rest of a partial line', async () => {
+      const lines = collectLines();
+      await connect();
+
+      serverSocket?.write(':server NOTICE');
+      await wait(20);
+      expect(lines).toEqual([]);
+
+      serverSocket?.write(' * :Hello\r\n');
+      await wait(20);
+      expect(lines).toEqual([':server NOTICE * :Hello']);
+    });
+
+    it('answers a server PING', async () => {
+      await connect();
+
+      serverSocket?.write('PING :server123\r\n');
+      await wait(50);
+
+      expect(received).toContain('PONG :server123\r\n');
+    });
+
+    it('drops the connection when a line exceeds 2 MiB', async () => {
+      const onClose = vi.fn();
+      client.on('close', onClose);
+      client.on('error', () => undefined);
+      await connect();
+
+      serverSocket?.write(Buffer.alloc(2.1 * 1024 * 1024, 0x41));
+      await wait(100);
+
+      expect(onClose).toHaveBeenCalled();
+    });
+
+    it('holds lines back while paused', async () => {
+      const lines = collectLines();
+      await connect();
+
+      client.pause();
+      serverSocket?.write(':server NOTICE * :while-paused\r\n');
+      await wait(50);
+      expect(lines).toEqual([]);
+
+      client.resume();
+      await wait(50);
+      expect(lines).toEqual([':server NOTICE * :while-paused']);
+    });
   });
 
-  it('waitForDrain() rejects when socket is null', async () => {
-    await expect(client.waitForDrain()).rejects.toThrow('Socket closed');
+  describe('waitForDrain', () => {
+    it('rejects while not connected', async () => {
+      await expect(client.waitForDrain()).rejects.toThrow('Socket closed');
+    });
+
+    it('resolves at once when nothing is buffered', async () => {
+      await connect();
+      await expect(client.waitForDrain()).resolves.toBeUndefined();
+    });
+  });
+});
+
+describe('ircCommand', () => {
+  it('returns the command word in upper case', () => {
+    expect(ircCommand('ping :x')).toBe('PING');
   });
 
-  it('waitForDrain() resolves immediately when socket is not backed up', async () => {
-    client.connectRaw({ host: '127.0.0.1', port: serverPort });
-    await new Promise((r) => setTimeout(r, 50));
-
-    await expect(client.waitForDrain()).resolves.toBeUndefined();
+  it('skips the source', () => {
+    expect(ircCommand(':server PONG server :123')).toBe('PONG');
   });
 
-  it('pause() and resume() control the underlying socket', async () => {
-    client.connectRaw({ host: '127.0.0.1', port: serverPort });
-    await new Promise((r) => setTimeout(r, 50));
-
-    const onRaw = vi.fn();
-    client.on('raw', onRaw);
-    onRaw.mockClear();
-
-    client.pause();
-
-    serverSocket?.write(':server NOTICE * :while-paused\r\n');
-    await new Promise((r) => setTimeout(r, 50));
-
-    const pausedCalls = onRaw.mock.calls.filter(
-      ([line, inbound]) => inbound && (line as string).includes('while-paused')
-    );
-    expect(pausedCalls.length).toBe(0);
-
-    client.resume();
-    await new Promise((r) => setTimeout(r, 50));
-
-    const resumedCalls = onRaw.mock.calls.filter(
-      ([line, inbound]) => inbound && (line as string).includes('while-paused')
-    );
-    expect(resumedCalls.length).toBe(1);
+  it('skips IRCv3 tags and the source', () => {
+    expect(ircCommand('@time=2026-01-01T00:00:00Z :server PING :x')).toBe('PING');
+    expect(ircCommand('@label=1 NICK me')).toBe('NICK');
   });
 });

@@ -1,12 +1,6 @@
 /**
- * Identd (RFC 1413) Server
+ * Identd (RFC 1413): tells an IRC server which user owns a connection the gateway opened.
  *
- * Responds to ident queries from IRC servers to verify the identity of
- * connecting clients. When the gateway proxies a TCP connection on behalf
- * of a WebSocket client, it registers the local/remote port pair so the
- * IRC server can query port 113 and receive the correct username.
- *
- * Protocol (RFC 1413):
  *   Query:    "serverPort, clientPort\r\n"
  *   Response: "serverPort, clientPort : USERID : UNIX : username\r\n"
  *   Error:    "serverPort, clientPort : ERROR : NO-USER\r\n"
@@ -14,94 +8,56 @@
 
 import * as net from 'node:net';
 
+const MAX_QUERY_BYTES = 512;
 
-// ============================================================================
-// Types
-// ============================================================================
-
-export interface IdentdEntry {
-  localPort: number;
-  remotePort: number;
-  remoteHost: string;
-  username: string;
-}
-
-// ============================================================================
-// Constants
-// ============================================================================
-
-/** Maximum bytes to buffer from an ident client before closing */
-const MAX_RECEIVE_BYTES = 512;
-
-/** Delay before retrying a lookup miss (race condition mitigation) */
+// The IRC server can ask before the gateway has registered the connection
 const RETRY_DELAY_MS = 500;
 
-/** Maximum concurrent connections to the identd server */
 const MAX_CONCURRENT_CONNECTIONS = 50;
 
-/** Time-to-live for entries in milliseconds (safety net for missed unregister calls) */
-const ENTRY_TTL_MS = 10 * 60 * 1000; // 10 minutes
+// Removes entries whose unregister was missed
+const ENTRY_TTL_MS = 10 * 60 * 1000;
 
-// ============================================================================
-// Username Sanitization
-// ============================================================================
-
-/**
- * Sanitize a username for ident responses.
- * Strips non-ASCII, replaces spaces/colons with underscore, truncates to 64 chars.
- */
+/** Printable ASCII only, without spaces or colons (they delimit the response), at most 64 chars. */
 function sanitizeUsername(raw: string): string {
   return raw
-    .replace(/[^\x20-\x7E]/g, '')   // strip non-printable / non-ASCII
-    .replace(/[\s:]/g, '_')          // replace spaces and colons
+    .replace(/[^\x20-\x7E]/g, '')
+    .replace(/[\s:]/g, '_')
     .slice(0, 64);
 }
 
-// ============================================================================
-// IdentdServer Class
-// ============================================================================
+const isValidPort = (port: number): boolean => Number.isInteger(port) && port >= 1 && port <= 65535;
+
+const entryKey = (localPort: number, remotePort: number, remoteHost: string): string => `${localPort},${remotePort},${remoteHost}`;
 
 export class IdentdServer {
   private server: net.Server | null = null;
   private entries = new Map<string, { username: string; createdAt: number }>();
-  private timeoutSeconds: number;
-  private activeConnections = 0;
-  private entryExpiryTimer: ReturnType<typeof setInterval> | null = null;
+  private connections = new Set<net.Socket>();
+  private expiryTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly timeoutSeconds: number;
 
   constructor(timeoutSeconds = 30) {
     this.timeoutSeconds = timeoutSeconds;
   }
 
-  // ==========================================================================
-  // Entry Management
-  // ==========================================================================
-
-  private makeKey(localPort: number, remotePort: number, remoteHost: string): string {
-    return `${localPort},${remotePort},${remoteHost}`;
-  }
-
+  /** `localPort` is the gateway's end of the IRC connection; the remote pair is the IRC server. */
   register(localPort: number, remotePort: number, remoteHost: string, username: string): void {
-    const key = this.makeKey(localPort, remotePort, remoteHost);
+    const key = entryKey(localPort, remotePort, remoteHost);
     const sanitized = sanitizeUsername(username);
     this.entries.set(key, { username: sanitized, createdAt: Date.now() });
     console.info(`[identd] Registered ${key} → ${sanitized}`);
   }
 
   unregister(localPort: number, remotePort: number, remoteHost: string): void {
-    const key = this.makeKey(localPort, remotePort, remoteHost);
+    const key = entryKey(localPort, remotePort, remoteHost);
     this.entries.delete(key);
     console.info(`[identd] Unregistered ${key}`);
   }
 
-  // ==========================================================================
-  // Lifecycle
-  // ==========================================================================
-
   start(port: number, host = '::'): Promise<void> {
     return new Promise((resolve, reject) => {
-      const server = net.createServer((socket) => {
-        this.handleConnection(socket);
-      });
+      const server = net.createServer((socket) => this.handleConnection(socket));
 
       server.on('error', (error) => {
         console.warn(`[identd] Server error: ${error.message}`);
@@ -110,7 +66,7 @@ export class IdentdServer {
 
       server.listen(port, host, () => {
         this.server = server;
-        this.entryExpiryTimer = setInterval(() => this.expireEntries(), ENTRY_TTL_MS);
+        this.expiryTimer = setInterval(() => this.expireEntries(), ENTRY_TTL_MS);
         console.log(`[identd] Listening on ${host}:${port}`);
         resolve();
       });
@@ -123,129 +79,94 @@ export class IdentdServer {
         resolve();
         return;
       }
-      if (this.entryExpiryTimer) {
-        clearInterval(this.entryExpiryTimer);
-        this.entryExpiryTimer = null;
+      if (this.expiryTimer) {
+        clearInterval(this.expiryTimer);
+        this.expiryTimer = null;
+      }
+      // close() waits for open connections, which could take a full query timeout
+      for (const socket of this.connections) {
+        socket.destroy();
       }
       this.server.close(() => {
         this.server = null;
         this.entries.clear();
-        this.activeConnections = 0;
         console.info('[identd] Stopped');
         resolve();
       });
     });
   }
 
-  // ==========================================================================
-  // Connection Handling
-  // ==========================================================================
-
   private handleConnection(socket: net.Socket): void {
-    // Reject connections over the concurrency limit
-    if (this.activeConnections >= MAX_CONCURRENT_CONNECTIONS) {
+    if (this.connections.size >= MAX_CONCURRENT_CONNECTIONS) {
       socket.destroy();
       return;
     }
-
-    this.activeConnections++;
-    const remoteAddress = socket.remoteAddress ?? '';
-
-    const onClose = (): void => {
-      this.activeConnections--;
-    };
-    socket.once('close', onClose);
+    this.connections.add(socket);
+    socket.once('close', () => this.connections.delete(socket));
 
     socket.setTimeout(this.timeoutSeconds * 1000);
-    socket.on('timeout', () => {
-      socket.destroy();
-    });
+    socket.on('timeout', () => socket.destroy());
+    // A client error only ends its own query
+    socket.on('error', () => undefined);
 
-    let buffer = '';
-
-    socket.on('data', (data: Buffer) => {
-      buffer += data.toString('ascii');
-
-      // Guard against oversized requests
-      if (buffer.length > MAX_RECEIVE_BYTES) {
+    let received = '';
+    const onData = (data: Buffer): void => {
+      received += data.toString('ascii');
+      if (received.length > MAX_QUERY_BYTES) {
         socket.destroy();
         return;
       }
 
-      // Look for a complete line
-      const lineEnd = buffer.indexOf('\n');
-      if (lineEnd === -1) return;
-
-      // Extract the first line (strip \r if present)
-      const line = buffer.slice(0, lineEnd).replace(/\r$/, '');
-      this.processQuery(socket, line, remoteAddress);
-    });
-
-    socket.on('error', () => {
-      // Silently ignore client errors
-    });
+      const lineEnd = received.indexOf('\n');
+      if (lineEnd === -1) {
+        return;
+      }
+      // One query per connection; anything after it is ignored
+      socket.off('data', onData);
+      this.answerQuery(socket, received.slice(0, lineEnd).replace(/\r$/, ''));
+    };
+    socket.on('data', onData);
   }
 
-  private processQuery(socket: net.Socket, line: string, remoteAddress: string): void {
-    // Normalize remoteAddress (strip ::ffff: IPv4-mapped prefix)
-    const normalizedRemote = remoteAddress.replace(/^::ffff:/, '');
+  private answerQuery(socket: net.Socket, line: string): void {
+    // Entries are registered with the plain IPv4 form, while this dual-stack listener sees ::ffff:a.b.c.d
+    const remoteHost = (socket.remoteAddress ?? '').replace(/^::ffff:/, '');
 
-    const parts = line.split(',').map((s) => s.trim());
+    const parts = line.split(',').map((part) => part.trim());
     if (parts.length !== 2) {
       this.respond(socket, line, 'ERROR : INVALID-PORT');
       return;
     }
 
-    // RFC 1413: query is "portOnServer, portOnClient"
-    // portOnServer = our local port (gateway's ephemeral port to IRC)
-    // portOnClient = the IRC server's port (remote port from our perspective)
-    const localPort = Number.parseInt(parts[0], 10);
-    const remotePort = Number.parseInt(parts[1], 10);
-
-    if (!this.isValidPort(localPort) || !this.isValidPort(remotePort)) {
-      this.respond(socket, `${parts[0]} , ${parts[1]}`, 'ERROR : INVALID-PORT');
+    // The querying IRC server lists its own port second: "our local port, its port"
+    const [localPortText = '', remotePortText = ''] = parts;
+    const localPort = Number.parseInt(localPortText, 10);
+    const remotePort = Number.parseInt(remotePortText, 10);
+    if (!isValidPort(localPort) || !isValidPort(remotePort)) {
+      this.respond(socket, `${localPortText} , ${remotePortText}`, 'ERROR : INVALID-PORT');
       return;
     }
 
     const portPair = `${localPort} , ${remotePort}`;
+    const key = entryKey(localPort, remotePort, remoteHost);
 
-    // Try immediate lookup
-    const username = this.lookup(localPort, remotePort, normalizedRemote);
+    const username = this.entries.get(key)?.username;
     if (username) {
       this.respond(socket, portPair, `USERID : UNIX : ${username}`);
       return;
     }
 
-    // Race condition mitigation: wait and retry once. The client may close
-    // its end of the socket in the meantime — guard respond() with a
-    // destroyed check so we don't write into the void and surface EPIPE.
     const retryTimer = setTimeout(() => {
-      if (socket.destroyed) return;
-      const retryUsername = this.lookup(localPort, remotePort, normalizedRemote);
-      if (retryUsername) {
-        console.info(`[identd] USER for ${this.makeKey(localPort, remotePort, normalizedRemote)}`);
-        this.respond(socket, portPair, `USERID : UNIX : ${retryUsername}`);
-      } else {
-        console.info(`[identd] NO-USER for ${this.makeKey(localPort, remotePort, normalizedRemote)}`);
-        this.respond(socket, portPair, 'ERROR : NO-USER');
+      if (socket.destroyed) {
+        return;
       }
+      const retryUsername = this.entries.get(key)?.username;
+      console.info(`[identd] ${retryUsername ? 'USER' : 'NO-USER'} for ${key}`);
+      this.respond(socket, portPair, retryUsername ? `USERID : UNIX : ${retryUsername}` : 'ERROR : NO-USER');
     }, RETRY_DELAY_MS);
-
-    // Cancel the retry if the socket closes before it fires.
     socket.once('close', () => clearTimeout(retryTimer));
   }
 
-  private lookup(localPort: number, remotePort: number, remoteHost: string): string | null {
-    const key = this.makeKey(localPort, remotePort, remoteHost);
-    const entry = this.entries.get(key);
-    return entry?.username ?? null;
-  }
-
-  private isValidPort(port: number): boolean {
-    return Number.isInteger(port) && port >= 1 && port <= 65535;
-  }
-
-  /** Remove entries older than ENTRY_TTL_MS */
   private expireEntries(): void {
     const now = Date.now();
     for (const [key, entry] of this.entries) {

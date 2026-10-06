@@ -1,583 +1,245 @@
-/**
- * IRC Client for Gateway
- *
- * Handles TCP/TLS connections to IRC servers, including:
- * - Connection establishment (plain and TLS)
- * - IRC protocol registration (NICK, USER, CAP, PASS)
- * - Message encoding/decoding for various character sets
- * - WEBIRC support for passing real client IPs to IRC servers
- * - Automatic PING/PONG keepalive
- */
-
+import { EventEmitter } from 'node:events';
 import * as net from 'node:net';
 import * as tls from 'node:tls';
 import iconv from 'iconv-lite';
-import {
-  BaseIrcClient,
-  SocketConnectionOptions,
-  IrcConnectionOptions,
-  IrcRawConnectionOptions,
-  WebircConfig
-} from './irc-types.js';
-import {
-  IRC_LINE_ENDING,
-  stripCRLF,
-  PING_INTERVAL_MS,
-  CONNECTION_TIMEOUT_MS,
-  DEFAULT_PONG_TIMEOUT_MS,
-  MAX_RECEIVE_BUFFER_SIZE,
-  RPL_WELCOME_PATTERN,
-  CAP_LS_PATTERN
-} from './constants.js';
 
-// ============================================================================
-// IRC Client Class
-// ============================================================================
+const CONNECT_TIMEOUT_MS = 30_000;
+const PING_INTERVAL_MS = 30_000;
+
+// A server that never sends a line terminator must not grow memory without bound
+const MAX_RECEIVE_BUFFER_SIZE = 2 * 1024 * 1024;
+
+const LF = 0x0a;
+const CR = 0x0d;
+
+/** Removes CR and LF, so one value can never become two IRC lines (line injection). */
+export const stripCRLF = (input: string): string => input.replace(/[\r\n]/g, '');
+
+/** The command word of an IRC line, after any tags and source. */
+export const ircCommand = (line: string): string | undefined => {
+  const words = line.split(' ');
+  let index = 0;
+  if (words[index]?.startsWith('@')) {
+    index++;
+  }
+  if (words[index]?.startsWith(':')) {
+    index++;
+  }
+  return words[index]?.toUpperCase();
+};
+
+/** WEBIRC tells the IRC server the browser's address instead of the gateway's. */
+export interface WebircConfig {
+  password: string;
+  gateway: string;
+  hostname: string;
+  ip: string;
+}
+
+export interface IrcClientOptions {
+  host: string;
+  port: number;
+  tls: boolean;
+  encoding: string;
+  /** Requires `tls`, since it carries a password */
+  webirc?: WebircConfig;
+  /** Seconds the server may stay silent after our PING */
+  pongTimeout: number;
+  /** Replaces DNS resolution, e.g. to refuse private addresses */
+  lookup?: net.LookupFunction;
+}
+
+export interface SocketMeta {
+  localPort: number;
+  localAddress: string;
+  remotePort: number;
+  remoteAddress: string;
+}
+
+interface IrcClientEvents {
+  'socket connected': [meta: SocketMeta];
+  line: [line: string];
+  close: [];
+  error: [error: Error];
+}
 
 /**
- * IRC Client
- *
- * Manages a single connection to an IRC server. Handles:
- * - TCP/TLS socket management
- * - IRC protocol message framing
- * - Character encoding conversion
- * - Automatic PING response and keepalive
- *
- * Events emitted:
- * - 'socket connected': TCP/TLS connection established
- * - 'connected': IRC registration complete (received 001)
- * - 'close': Connection closed
- * - 'error': Connection error occurred
- * - 'raw': Raw IRC message (line: string, inbound: boolean)
+ * Connection to an IRC server on behalf of one browser, which does its own registration.
+ * The gateway only sends WEBIRC first, answers server PINGs, and PINGs the server to detect a dead connection.
  */
-export class IrcClient extends BaseIrcClient {
-  /** TCP or TLS socket connection */
-  private socket: net.Socket | tls.TLSSocket | null = null;
-
-  /** Buffer for incomplete incoming data */
+export class IrcClient extends EventEmitter<IrcClientEvents> {
+  private socket: net.Socket | null = null;
   private receiveBuffer = Buffer.alloc(0);
+  private encoding = 'utf8';
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
+  private pongTimer: ReturnType<typeof setTimeout> | null = null;
 
-  /** Character encoding for this connection */
-  private characterEncoding = 'utf8';
-
-  /** Timer for periodic PING keepalive */
-  private pingIntervalTimer: ReturnType<typeof setInterval> | null = null;
-
-  /** Timer that fires if server doesn't respond after PING */
-  private pongTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
-
-  /** Resolved PONG timeout in milliseconds */
-  private pongTimeoutMs = DEFAULT_PONG_TIMEOUT_MS;
-
-  /** Whether CAP END has been sent for this connection (prevents duplicates) */
-  private capEndSent = false;
-
-  /** Socket metadata captured on connection (ports and addresses) */
-  private connectionMeta: {
-    localPort: number;
-    localAddress: string;
-    remotePort: number;
-    remoteAddress: string;
-  } | null = null;
-
-  // ==========================================================================
-  // Connection Management
-  // ==========================================================================
-
-  /**
-   * Connect to an IRC server
-   *
-   * Establishes a TCP or TLS connection and performs IRC registration:
-   * 1. Sends WEBIRC (if configured)
-   * 2. Sends PASS (if password provided)
-   * 3. Sends CAP LS 302 to negotiate capabilities
-   * 4. Sends NICK and USER to complete registration
-   */
-  connect(options: IrcConnectionOptions): void {
-    // Clean up any existing connection
+  connect(options: IrcClientOptions): void {
     this.destroy();
 
-    // Initialize connection state
-    this.characterEncoding = options.encoding ?? 'utf8';
+    this.encoding = options.encoding;
     this.receiveBuffer = Buffer.alloc(0);
-    this.pongTimeoutMs = (options.pongTimeout ?? 120) * 1000;
-    this.capEndSent = false;
 
-    // Create socket (TLS or plain TCP)
-    const socket = this.createSocket(options);
+    const target = { host: options.host, port: options.port, lookup: options.lookup };
+    const socket = options.tls ? tls.connect({ ...target, rejectUnauthorized: true }) : net.connect(target);
     this.socket = socket;
 
-    // Handle successful connection
-    socket.once('connect', () => {
-      this.handleSocketConnected(options);
-    });
+    socket.setTimeout(CONNECT_TIMEOUT_MS);
+    socket.once('timeout', () => socket.destroy(new Error('Connection timed out')));
+    // On TLS, 'connect' fires before the handshake, so a stalled handshake would never time out
+    socket.once(options.tls ? 'secureConnect' : 'connect', () => this.handleConnected(options));
 
-    // Handle incoming data
-    socket.on('data', (data: Buffer) => {
-      this.handleIncomingData(data);
-    });
-
-    // Handle connection close
+    socket.on('data', (data: Buffer) => this.handleData(data));
     socket.on('close', () => {
-      this.handleSocketClosed();
+      this.stopKeepalive();
+      this.emit('close');
     });
-
-    // Handle connection errors
-    socket.on('error', (error: Error) => {
-      this.emit('error', error);
-    });
+    socket.on('error', (error: Error) => this.emit('error', error));
   }
 
-  /**
-   * Connect to an IRC server in raw mode
-   *
-   * Establishes a TCP or TLS connection but does NOT perform IRC registration.
-   * The client is expected to send NICK, USER, CAP, etc. themselves.
-   * Only WEBIRC is sent if configured (must be first command per IRC spec).
-   */
-  connectRaw(options: IrcRawConnectionOptions): void {
-    // Clean up any existing connection
-    this.destroy();
-
-    // Initialize connection state
-    this.characterEncoding = options.encoding ?? 'utf8';
-    this.receiveBuffer = Buffer.alloc(0);
-    this.pongTimeoutMs = (options.pongTimeout ?? 120) * 1000;
-
-    // Create socket (TLS or plain TCP)
-    const socket = this.createSocket(options);
-    this.socket = socket;
-
-    // Handle successful connection
-    socket.once('connect', () => {
-      this.handleRawSocketConnected(options);
-    });
-
-    // Handle incoming data
-    socket.on('data', (data: Buffer) => {
-      this.handleIncomingData(data);
-    });
-
-    // Handle connection close
-    socket.on('close', () => {
-      this.handleSocketClosed();
-    });
-
-    // Handle connection errors
-    socket.on('error', (error: Error) => {
-      this.emit('error', error);
-    });
+  /** `false` means the socket is not writable or its buffer is full; wait for `waitForDrain()`. */
+  send(line: string): boolean {
+    if (!this.socket?.writable) {
+      return false;
+    }
+    return this.socket.write(this.encode(`${stripCRLF(line)}\r\n`));
   }
 
-  /**
-   * Handle successful socket connection in raw mode
-   *
-   * Only sends WEBIRC if configured, then lets client handle registration
-   */
-  private handleRawSocketConnected(options: IrcRawConnectionOptions): void {
-    // Handshake succeeded — disable the connection establishment timeout
-    this.socket?.setTimeout(0);
+  get writable(): boolean {
+    return this.socket?.writable ?? false;
+  }
 
-    // Capture socket metadata before emitting
-    this.connectionMeta = this.captureSocketMeta();
-    this.emit('socket connected', this.connectionMeta);
-
-    // Send WEBIRC command if configured (must be first)
-    if (options.webirc) {
-      if (!options.tls) {
-        this.emit('error', new Error('Connection rejected — TLS required'));
-        this.socket?.destroy();
+  /** Rejects if the socket closes before draining. */
+  waitForDrain(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const socket = this.socket;
+      if (!socket) {
+        reject(new Error('Socket closed'));
         return;
-      } else {
-        this.sendWebirc(options.webirc);
       }
-    }
-
-    // Start keepalive ping timer
-    this.startPingTimer();
+      if (!socket.writableNeedDrain) {
+        resolve();
+        return;
+      }
+      const onDrain = (): void => {
+        socket.off('close', onClose);
+        resolve();
+      };
+      const onClose = (): void => {
+        socket.off('drain', onDrain);
+        reject(new Error('Socket closed before drain'));
+      };
+      socket.once('drain', onDrain);
+      socket.once('close', onClose);
+    });
   }
 
-  /**
-   * Create a TCP or TLS socket based on connection options
-   */
-  private createSocket(options: SocketConnectionOptions): net.Socket | tls.TLSSocket {
-    const connectionConfig = {
-      host: options.host,
-      port: options.port,
-    };
+  // Lets TCP flow control slow the server down while the WebSocket client catches up
+  pause(): void {
+    this.socket?.pause();
+  }
 
-    let socket: net.Socket | tls.TLSSocket;
+  resume(): void {
+    this.socket?.resume();
+  }
 
-    if (options.tls) {
-      // TLS connection — always validate certificates
-      socket = tls.connect({
-        ...connectionConfig,
-        rejectUnauthorized: true,
-      });
-    } else {
-      // Plain TCP connection
-      socket = net.connect(connectionConfig);
+  quit(message: string): void {
+    if (this.socket?.writable) {
+      this.send(`QUIT :${message}`);
+      this.socket.end();
     }
+    this.stopKeepalive();
+  }
 
-    // Connection establishment timeout — destroy socket if handshake
-    // doesn't complete within the allowed time
-    socket.setTimeout(CONNECTION_TIMEOUT_MS);
-    socket.once('timeout', () => {
-      socket.destroy(new Error('Connection timed out'));
+  destroy(): void {
+    this.stopKeepalive();
+    this.socket?.destroy();
+    this.socket = null;
+  }
+
+  private handleConnected(options: IrcClientOptions): void {
+    const socket = this.socket;
+    if (!socket) {
+      return;
+    }
+    socket.setTimeout(0);
+
+    this.emit('socket connected', {
+      localPort: socket.localPort ?? 0,
+      localAddress: socket.localAddress ?? '',
+      remotePort: socket.remotePort ?? 0,
+      remoteAddress: socket.remoteAddress ?? '',
     });
 
-    return socket;
-  }
-
-  /**
-   * Handle successful socket connection
-   *
-   * Performs IRC registration sequence
-   */
-  private handleSocketConnected(options: IrcConnectionOptions): void {
-    // Handshake succeeded — disable the connection establishment timeout
-    this.socket?.setTimeout(0);
-
-    // Capture socket metadata before emitting
-    this.connectionMeta = this.captureSocketMeta();
-    this.emit('socket connected', this.connectionMeta);
-
-    // Send WEBIRC command if configured (must be first)
+    // WEBIRC must be the first line the server sees
     if (options.webirc) {
-      if (!options.tls) {
-        this.emit('error', new Error('Connection rejected — TLS required'));
-        this.socket?.destroy();
-        return;
-      } else {
-        this.sendWebirc(options.webirc);
-      }
+      const { password, gateway, hostname, ip } = options.webirc;
+      this.send(`WEBIRC ${password} ${gateway} ${hostname} ${ip}`);
     }
 
-    // Send server password if provided
-    if (options.password) {
-      this.send(`PASS ${stripCRLF(options.password)}`);
-    }
-
-    // Request IRCv3 capability negotiation
-    this.send('CAP LS 302');
-
-    // Send nickname
-    this.send(`NICK ${stripCRLF(options.nick)}`);
-
-    // Send user information
-    const username = stripCRLF(options.username ?? options.nick);
-    const realname = stripCRLF(options.realname ?? options.nick);
-    this.send(`USER ${username} 0 * :${realname}`);
-
-    // Start keepalive ping timer
-    this.startPingTimer();
+    this.startKeepalive(options.pongTimeout * 1000);
   }
 
-  /**
-   * Handle socket close event
-   */
-  private handleSocketClosed(): void {
-    this.stopPingTimer();
-    this.connectionMeta = null;
-    this.emit('close');
-  }
-
-  // ==========================================================================
-  // Data Handling
-  // ==========================================================================
-
-  /**
-   * Handle incoming data from the socket
-   *
-   * IRC messages are terminated by \r\n, but data may arrive in chunks
-   * that don't align with message boundaries. This method buffers
-   * incoming data and processes complete lines.
-   */
-  private handleIncomingData(data: Buffer): void {
-    // Append new data to buffer
+  private handleData(data: Buffer): void {
     this.receiveBuffer = Buffer.concat([this.receiveBuffer, data]);
 
-    // Process complete lines
-    let lineEndIndex: number;
-    while ((lineEndIndex = this.receiveBuffer.indexOf(IRC_LINE_ENDING)) !== -1) {
-      // Extract the line (without \r\n)
-      const lineBuffer = this.receiveBuffer.subarray(0, lineEndIndex);
-      const line = this.decodeBuffer(lineBuffer);
+    // RFC 1459 mandates CRLF, but some servers and bouncers send a bare LF
+    let lineEnd: number;
+    while ((lineEnd = this.receiveBuffer.indexOf(LF)) !== -1) {
+      const contentEnd = lineEnd > 0 && this.receiveBuffer[lineEnd - 1] === CR ? lineEnd - 1 : lineEnd;
+      const line = this.decode(this.receiveBuffer.subarray(0, contentEnd));
+      this.receiveBuffer = this.receiveBuffer.subarray(lineEnd + 1);
 
-      // Remove processed data from buffer (including \r\n)
-      this.receiveBuffer = this.receiveBuffer.subarray(lineEndIndex + 2);
-
-      // Process the line
-      if (line) {
-        this.handleIrcLine(line);
+      if (line.length > 0) {
+        this.handleLine(line);
       }
     }
 
-    // Guard against unbounded buffer growth (e.g. malicious server sending
-    // data without line terminators). After processing complete lines, only
-    // the last incomplete line remains — this should be small (< 512 bytes).
     if (this.receiveBuffer.length > MAX_RECEIVE_BUFFER_SIZE) {
       this.socket?.destroy(new Error('Receive buffer overflow'));
     }
   }
 
-  /**
-   * Handle a complete IRC line
-   */
-  private handleIrcLine(line: string): void {
-    // Any data from server proves it's alive — clear the PONG timeout
-    this.clearPongTimeout();
+  private handleLine(line: string): void {
+    // Any line proves the server is alive
+    this.clearPongTimer();
+    this.emit('line', line);
 
-    // Emit raw line for logging and forwarding to client
-    this.emit('raw', line, true);
-
-    // Respond to server PING to maintain connection
     if (line.startsWith('PING ')) {
-      const pingData = line.slice(5);
-      this.send(`PONG ${pingData}`);
-      return;
-    }
-
-    // Handle CAP LS response — detect both prefixed (:server CAP ...) and
-    // non-prefixed (CAP ...) formats. Send CAP END on the final line.
-    const capLsMatch = CAP_LS_PATTERN.exec(line);
-    if (capLsMatch) {
-      // Group 1 is ' *' when this is a multiline continuation; absent on final line
-      const isContinuation = capLsMatch[1] !== undefined;
-      if (!isContinuation && !this.capEndSent) {
-        this.capEndSent = true;
-        this.send('CAP END');
-      }
-      return;
-    }
-
-    // Detect successful registration (numeric 001 from server)
-    if (RPL_WELCOME_PATTERN.test(line)) {
-      this.emit('connected');
+      this.send(`PONG ${line.slice('PING '.length)}`);
     }
   }
 
-  // ==========================================================================
-  // Sending Messages
-  // ==========================================================================
-
-  /**
-   * Send a raw IRC command to the server
-   *
-   * Automatically appends \r\n line terminator. Returns `true` if the socket
-   * drained the write synchronously, `false` when Node's internal buffer has
-   * filled and the caller should stop pushing data until the returned
-   * `'drain'` promise resolves. When the socket isn't writable at all,
-   * returns `false` without throwing.
-   */
-  send(line: string): boolean {
-    if (!this.socket?.writable) return false;
-    const encodedLine = this.encodeString(`${stripCRLF(line)}${IRC_LINE_ENDING}`);
-    const flushed = this.socket.write(encodedLine);
-
-    // Emit raw line for logging (inbound = false)
-    this.emit('raw', line, false);
-
-    if (!flushed) {
-      this.emit('backpressure');
-    }
-    return flushed;
-  }
-
-  /** True when the socket's internal write buffer still has headroom. */
-  get writable(): boolean {
-    return this.socket?.writable ?? false;
-  }
-
-  /**
-   * Wait for the socket to drain after a `send()` returned false. Rejects
-   * if the socket closes before draining.
-   */
-  waitForDrain(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (!this.socket) {
-        reject(new Error('Socket closed'));
-        return;
-      }
-      if (this.socket.writableNeedDrain === false) {
-        resolve();
-        return;
-      }
-      const onDrain = (): void => {
-        this.socket?.off('close', onClose);
-        resolve();
-      };
-      const onClose = (): void => {
-        this.socket?.off('drain', onDrain);
-        reject(new Error('Socket closed before drain'));
-      };
-      this.socket.once('drain', onDrain);
-      this.socket.once('close', onClose);
-    });
-  }
-
-  /**
-   * Send WEBIRC command with password scrubbed from logs
-   */
-  private sendWebirc(webirc: WebircConfig): void {
-    const password = stripCRLF(webirc.password);
-    const gateway = stripCRLF(webirc.gateway);
-    const hostname = stripCRLF(webirc.hostname);
-    const ip = stripCRLF(webirc.ip);
-
-    if (this.socket?.writable) {
-      const line = `WEBIRC ${password} ${gateway} ${hostname} ${ip}`;
-      const encodedLine = this.encodeString(`${line}${IRC_LINE_ENDING}`);
-      this.socket.write(encodedLine);
-
-      // Emit scrubbed version for logging — never log the password
-      this.emit('raw', `WEBIRC ****** ${gateway} ${hostname} ${ip}`, false);
-    }
-  }
-
-  /**
-   * Send QUIT command and gracefully close the connection
-   */
-  quit(message?: string): void {
-    if (this.socket?.writable) {
-      // Send QUIT with optional message
-      const quitCommand = message ? `QUIT :${message}` : 'QUIT';
-      this.send(quitCommand);
-
-      // Gracefully close the socket
-      this.socket.end();
-    }
-
-    this.stopPingTimer();
-  }
-
-  /**
-   * Pause reads from the IRC server so TCP-level flow control can slow the
-   * upstream down. Used by the gateway when a downstream WebSocket client is
-   * falling behind, to avoid unbounded buffering inside the gateway process.
-   */
-  pause(): void {
-    this.socket?.pause();
-  }
-
-  /** Resume reads from the IRC server after a pause(). */
-  resume(): void {
-    this.socket?.resume();
-  }
-
-  /**
-   * Forcefully destroy the connection
-   *
-   * Use this when you need to immediately close without
-   * waiting for graceful shutdown
-   */
-  destroy(): void {
-    this.stopPingTimer();
-    this.connectionMeta = null;
-
-    if (this.socket) {
-      this.socket.destroy();
-      this.socket = null;
-    }
-  }
-
-  // ==========================================================================
-  // Keepalive
-  // ==========================================================================
-
-  /**
-   * Start the periodic PING keepalive timer
-   *
-   * Sends PING messages to detect dead connections
-   */
-  private startPingTimer(): void {
-    this.pingIntervalTimer = setInterval(() => {
-      // Use timestamp as PING data for debugging
+  private startKeepalive(pongTimeoutMs: number): void {
+    this.pingTimer = setInterval(() => {
       this.send(`PING :${Date.now()}`);
-
-      // Start a PONG timeout — if the server doesn't send anything
-      // before this fires, consider the connection dead
-      this.clearPongTimeout();
-      this.pongTimeoutTimer = setTimeout(() => {
+      this.clearPongTimer();
+      this.pongTimer = setTimeout(() => {
         this.socket?.destroy(new Error('PONG timeout: server unresponsive'));
-      }, this.pongTimeoutMs);
+      }, pongTimeoutMs);
     }, PING_INTERVAL_MS);
   }
 
-  /**
-   * Clear the PONG response timeout (called when server sends any data)
-   */
-  private clearPongTimeout(): void {
-    if (this.pongTimeoutTimer) {
-      clearTimeout(this.pongTimeoutTimer);
-      this.pongTimeoutTimer = null;
+  private stopKeepalive(): void {
+    if (this.pingTimer) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
+    this.clearPongTimer();
+  }
+
+  private clearPongTimer(): void {
+    if (this.pongTimer) {
+      clearTimeout(this.pongTimer);
+      this.pongTimer = null;
     }
   }
 
-  /**
-   * Stop the PING keepalive timer and PONG timeout
-   */
-  private stopPingTimer(): void {
-    if (this.pingIntervalTimer) {
-      clearInterval(this.pingIntervalTimer);
-      this.pingIntervalTimer = null;
-    }
-    this.clearPongTimeout();
+  private decode(buffer: Buffer): string {
+    return this.encoding === 'utf8' ? buffer.toString('utf8') : iconv.decode(buffer, this.encoding);
   }
 
-  // ==========================================================================
-  // Character Encoding
-  // ==========================================================================
-
-  /**
-   * Decode a buffer to string using the connection's character encoding
-   */
-  private decodeBuffer(buffer: Buffer): string {
-    if (this.characterEncoding === 'utf8') {
-      return buffer.toString('utf8');
-    }
-    return iconv.decode(buffer, this.characterEncoding);
-  }
-
-  /**
-   * Encode a string to buffer using the connection's character encoding
-   */
-  private encodeString(text: string): Buffer {
-    if (this.characterEncoding === 'utf8') {
-      return Buffer.from(text, 'utf8');
-    }
-    return iconv.encode(text, this.characterEncoding);
-  }
-
-  // ==========================================================================
-  // State
-  // ==========================================================================
-
-  /**
-   * Capture port/address metadata from the underlying socket
-   */
-  private captureSocketMeta() {
-    if (!this.socket) return null;
-    return {
-      localPort: this.socket.localPort ?? 0,
-      localAddress: this.socket.localAddress ?? '',
-      remotePort: this.socket.remotePort ?? 0,
-      remoteAddress: this.socket.remoteAddress ?? '',
-    };
-  }
-
-  /**
-   * Get socket metadata (local/remote ports and addresses)
-   * Available after 'socket connected' event, null after close
-   */
-  get socketMeta() {
-    return this.connectionMeta;
-  }
-
-  /**
-   * Check if the connection is currently active and writable
-   */
-  get connected(): boolean {
-    return this.socket?.writable ?? false;
+  private encode(text: string): Buffer {
+    return this.encoding === 'utf8' ? Buffer.from(text, 'utf8') : iconv.encode(text, this.encoding);
   }
 }

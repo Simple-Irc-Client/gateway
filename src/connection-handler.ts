@@ -1,36 +1,65 @@
-/**
- * Connection Handling for IRC Gateway
- * 
- * Manages WebSocket upgrades, validation, and connection establishment
- */
-
-import { WebSocketServer, WebSocket } from 'ws';
+import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
-import { IncomingMessage } from 'node:http';
-import { getConfig } from './config.js';
-import { IrcClient } from './irc-client.js';
-import { IdentdServer } from './identd.js';
-import { ConnectedClient, ClientManager } from './client-manager.js';
-import { isPrivateHost } from './security.js';
-import { ALLOWED_ENCODINGS } from './constants.js';
+import { WebSocket, type WebSocketServer } from 'ws';
+import { getConfig, type Config } from './config.js';
+import { ircCommand, stripCRLF, type SocketMeta } from './irc-client.js';
+import type { IdentdServer } from './identd.js';
+import type { ClientManager, ConnectedClient, ServerConfig } from './client-manager.js';
+import { isPrivateHost, privateAddressGuard } from './security.js';
 
-// ============================================================================
-// Connection Handler Class
-// ============================================================================
+const ALLOWED_ENCODINGS = new Set([
+  'utf8', 'utf-8', 'ascii', 'latin1', 'iso-8859-1', 'iso-8859-2', 'iso-8859-3',
+  'iso-8859-4', 'iso-8859-5', 'iso-8859-6', 'iso-8859-7', 'iso-8859-8',
+  'iso-8859-9', 'iso-8859-10', 'iso-8859-13', 'iso-8859-14', 'iso-8859-15',
+  'iso-8859-16', 'windows-1250', 'windows-1251', 'windows-1252', 'windows-1253',
+  'windows-1254', 'windows-1255', 'windows-1256', 'windows-1257', 'windows-1258',
+  'koi8-r', 'koi8-u', 'shift_jis', 'euc-jp', 'euc-kr', 'gb2312', 'gbk', 'gb18030',
+  'big5', 'tis-620',
+]);
+
+// The IRC socket resumes once the browser's buffer falls below this
+const WS_BUFFER_LOW_WATER_MARK = 512 * 1024;
+const WS_DRAIN_POLL_MS = 50;
+
+const isKeepalive = (line: string): boolean => {
+  const command = ircCommand(line);
+  return command === 'PING' || command === 'PONG';
+};
+
+/** The browser's address; X-Forwarded-For is trusted only behind a configured proxy. */
+const getClientIp = (request: IncomingMessage, trustProxy: boolean): string => {
+  if (trustProxy) {
+    const forwardedFor = request.headers['x-forwarded-for']?.toString().split(',')[0]?.trim();
+    if (forwardedFor) {
+      return forwardedFor;
+    }
+  }
+  return request.socket.remoteAddress ?? '127.0.0.1';
+};
+
+/** Reads the target IRC server from the query string; `null` when host or port is missing or invalid. */
+const parseServerConfig = (params: URLSearchParams): ServerConfig | null => {
+  const host = params.get('host');
+  const port = Number(params.get('port'));
+  if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
+    return null;
+  }
+  const encoding = params.get('encoding') ?? 'utf8';
+  return {
+    host,
+    port,
+    tls: params.get('tls') === 'true',
+    encoding: ALLOWED_ENCODINGS.has(encoding.toLowerCase()) ? encoding : 'utf8',
+  };
+};
 
 /**
- * Connection Handler
- * 
- * Handles WebSocket upgrade requests and connection establishment
+ * Accepts browser WebSockets and relays raw IRC lines between each one and its IRC server.
+ * Connection URL: ws://gateway:8667/webirc?host=irc.example.com&port=6697&tls=true&encoding=utf8
  */
 export class ConnectionHandler {
-  /** WebSocket server instance */
-  private webSocketServer: WebSocketServer;
-
-  /** Client manager for tracking connected clients */
-  private clientManager: ClientManager;
-
-  /** Identd server for responding to IRC ident queries */
+  private readonly webSocketServer: WebSocketServer;
+  private readonly clientManager: ClientManager;
   private identdServer: IdentdServer | null = null;
 
   constructor(webSocketServer: WebSocketServer, clientManager: ClientManager) {
@@ -38,55 +67,20 @@ export class ConnectionHandler {
     this.clientManager = clientManager;
   }
 
-  /**
-   * Set the identd server instance
-   */
   setIdentdServer(identdServer: IdentdServer | null): void {
     this.identdServer = identdServer;
   }
 
-  // ==========================================================================
-  // Connection Handling
-  // ==========================================================================
-
-  /**
-   * Handle incoming WebSocket upgrade requests
-   *
-   * Validates the request path, parses server configuration from query params,
-   * checks rate limits, and establishes the WebSocket connection if all checks pass.
-   */
-  handleWebSocketUpgrade(
-    request: IncomingMessage,
-    socket: Duplex,
-    head: Buffer
-  ): void {
+  handleWebSocketUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void {
     const config = getConfig();
+    const url = new URL(request.url ?? '/', 'http://localhost');
+    const clientIp = getClientIp(request, config.trustProxy);
 
-    // Parse the request URL to get the path and query parameters
-    const requestUrl = new URL(
-      request.url ?? '/',
-      `http://${request.headers.host ?? 'localhost'}`
-    );
-    const requestPath = requestUrl.pathname;
-
-    // Get client IP address — only trust X-Forwarded-For when behind a configured proxy
-    const clientIp = (() => {
-      if (config.trustProxy) {
-        const forwardedFor = request.headers['x-forwarded-for']?.toString();
-        if (forwardedFor) {
-          return forwardedFor.split(',')[0].trim();
-        }
-      }
-      return request.socket.remoteAddress ?? '127.0.0.1';
-    })();
-
-    // Validate request path
-    if (requestPath !== config.path) {
+    if (url.pathname !== config.path) {
       this.rejectConnection(socket, 404, 'Not Found');
       return;
     }
 
-    // Validate Origin header against allowlist (if configured)
     if (config.allowedOrigins?.length) {
       const origin = request.headers.origin;
       if (!origin || !config.allowedOrigins.includes(origin)) {
@@ -95,132 +89,112 @@ export class ConnectionHandler {
       }
     }
 
-    // Parse server configuration from query parameters
-    const host = requestUrl.searchParams.get('host');
-    const portStr = requestUrl.searchParams.get('port');
-    const port = portStr ? Number.parseInt(portStr, 10) : null;
-    const tls = requestUrl.searchParams.get('tls') === 'true';
-    const encodingParam = requestUrl.searchParams.get('encoding') ?? 'utf8';
-    const encoding = ALLOWED_ENCODINGS.has(encodingParam.toLowerCase()) ? encodingParam : 'utf8';
-
-    // Enforce TLS if configured (allow override for testing)
-    if (config.enforceTls && !tls && requestUrl.searchParams.get('allowInsecure') !== 'true') {
+    if (config.enforceTls && url.searchParams.get('tls') !== 'true') {
       this.rejectConnection(socket, 403, 'Forbidden - TLS required for all connections');
       return;
     }
 
-    // Validate required parameters
-    if (!host || !port || Number.isNaN(port) || port < 1 || port > 65535) {
+    const serverConfig = parseServerConfig(url.searchParams);
+    if (!serverConfig) {
       this.rejectConnection(socket, 400, 'Bad Request - Missing or invalid host/port');
       return;
     }
 
-    // SSRF protection: block private/reserved IP ranges
-    if (config.blockPrivateHosts && isPrivateHost(host)) {
-      console.warn(`[gateway] SSRF blocked: ${clientIp} tried to connect to private host ${host}`);
+    if (config.blockPrivateHosts && isPrivateHost(serverConfig.host)) {
+      console.warn(`[gateway] SSRF blocked: ${clientIp} tried to connect to private host ${serverConfig.host}`);
       this.rejectConnection(socket, 403, 'Forbidden - Private hosts not allowed');
       return;
     }
 
-    // Check if server is in allowed list (if configured)
-    if (config.allowedServers?.length) {
-      const serverAddress = `${host}:${port}`;
-      if (!config.allowedServers.includes(serverAddress)) {
-        this.rejectConnection(socket, 403, 'Forbidden - Server not allowed');
-        return;
-      }
+    if (config.allowedServers?.length && !config.allowedServers.includes(`${serverConfig.host}:${serverConfig.port}`)) {
+      this.rejectConnection(socket, 403, 'Forbidden - Server not allowed');
+      return;
     }
 
-    // Check per-IP connection limit
-    const currentIpConnections = this.clientManager.getIpConnectionCount(clientIp);
-    if (currentIpConnections >= config.maxConnectionsPerIp) {
-      console.warn(`[gateway] Per-IP limit reached: ${clientIp} (${currentIpConnections} connections)`);
+    const ipConnections = this.clientManager.getIpConnectionCount(clientIp);
+    if (ipConnections >= config.maxConnectionsPerIp) {
+      console.warn(`[gateway] Per-IP limit reached: ${clientIp} (${ipConnections} connections)`);
       this.rejectConnection(socket, 429, 'Too Many Requests');
       return;
     }
 
-    // Check total client limit
     if (this.clientManager.clientCount >= config.maxClients) {
       this.rejectConnection(socket, 503, 'Service Unavailable');
       return;
     }
 
-    // Parse ident username from query param (may be null, resolved in handleNewClient)
-    const identUsername = requestUrl.searchParams.get('ident');
-
-    // Accept the WebSocket connection
+    const identUsername = url.searchParams.get('ident');
     this.webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
-      this.handleNewClient(webSocket, clientIp, { host, port, tls, encoding }, identUsername);
+      this.handleNewClient(webSocket, clientIp, serverConfig, identUsername, config);
     });
   }
 
-  /**
-   * Reject a WebSocket upgrade with an HTTP error response
-   */
   private rejectConnection(socket: Duplex, statusCode: number, message: string): void {
     socket.write(`HTTP/1.1 ${statusCode} ${message}\r\n\r\n`);
     socket.destroy();
   }
 
-  /**
-   * Handle a newly connected WebSocket client
-   */
   private handleNewClient(
     webSocket: WebSocket,
     clientIp: string,
-    serverConfig: { host: string; port: number; tls: boolean; encoding: string },
-    identUsername: string | null
+    serverConfig: ServerConfig,
+    identUsername: string | null,
+    config: Config
   ): void {
-    const config = getConfig();
-
-    // Create client via client manager
     const client = this.clientManager.createClient(webSocket, clientIp, serverConfig, identUsername);
+    const { ircClient } = client;
 
-    // Create IRC client and connect immediately
-    this.connectToIrc(client, config);
+    // Kept from 'socket connected', since the identd entry must be removed by whichever side closes first
+    let identEntry: SocketMeta | null = null;
+    const unregisterIdent = (): void => {
+      if (identEntry) {
+        this.identdServer?.unregister(identEntry.localPort, identEntry.remotePort, identEntry.remoteAddress);
+        identEntry = null;
+      }
+    };
 
-    // Set up WebSocket event handlers
-    webSocket.on('message', (data) => {
-      this.handleClientMessage(client, data.toString());
+    ircClient.on('socket connected', (meta) => {
+      identEntry = meta;
+      this.identdServer?.register(meta.localPort, meta.remotePort, meta.remoteAddress, client.identUsername);
+    });
+    ircClient.on('line', (line) => this.forwardToBrowser(client, line, config));
+    ircClient.on('error', (error) => {
+      console.warn(`[${client.id}] IRC error: ${error.message}`);
+      this.clientManager.sendRawToClient(webSocket, `ERROR :${stripCRLF(error.message)}`);
+    });
+    ircClient.on('close', () => {
+      unregisterIdent();
+      webSocket.close();
     });
 
+    webSocket.on('message', (data) => this.forwardToServer(client, data.toString(), config));
+    webSocket.on('pong', () => this.clientManager.clearWsPongTimer(client));
+    webSocket.on('error', (error) => console.warn(`[${client.id}] WebSocket error: ${error.message}`));
     webSocket.on('close', () => {
-      this.handleClientDisconnect(client, config.quitMessage);
+      unregisterIdent();
+      ircClient.quit(config.quitMessage);
+      this.clientManager.removeClient(client);
     });
 
-    webSocket.on('error', (error: Error) => {
-      console.warn(`[${client.id}] WebSocket error: ${error.message}`);
-    });
-
-    webSocket.on('pong', () => {
-      this.clientManager.clearWsPongTimer(client);
-    });
-
-    // Start WebSocket-level keepalive pings
     this.clientManager.startWsPing(client, config.wsPingInterval, config.wsPongTimeout);
+    this.clientManager.startRegistrationTimeout(client, config.registrationTimeout);
+    this.clientManager.resetIdleTimeout(client, config.idleTimeout);
 
-    // Start registration timeout — client must send NICK/USER within the window
-    this.clientManager.startRegistrationTimeout(client, config.registrationTimeout, config.quitMessage);
-
-    // Start idle timeout — resets on meaningful IRC traffic
-    this.clientManager.resetIdleTimeout(client, config.idleTimeout, config.quitMessage);
+    this.connectToIrc(client, config);
   }
 
-  /**
-   * Connect to IRC server for a client
-   */
-  private connectToIrc(client: ConnectedClient, config: ReturnType<typeof getConfig>): void {
-    if (!client.serverConfig) return;
+  private connectToIrc(client: ConnectedClient, config: Config): void {
+    const { host, port, tls, encoding } = client.serverConfig;
 
-    // Create new IRC client
-    const ircClient = new IrcClient();
-    client.ircClient = ircClient;
+    // WEBIRC carries a password, so it never goes over plaintext
+    if (config.webircPassword && !tls) {
+      console.warn(`[${client.id}] Rejected non-TLS connection while WEBIRC is configured`);
+      this.clientManager.sendRawToClient(client.webSocket, 'ERROR :Connection rejected — TLS required');
+      client.webSocket.close();
+      return;
+    }
 
-    // Set up IRC event handlers
-    this.setupIrcEventHandlers(client, ircClient);
-
-    // Build WEBIRC configuration if password is set
-    const webircConfig = config.webircPassword
+    const webirc = config.webircPassword
       ? {
           password: config.webircPassword,
           gateway: config.webircGateway ?? 'gateway',
@@ -229,171 +203,74 @@ export class ConnectionHandler {
         }
       : undefined;
 
-    // Connect to IRC server (but don't send NICK/USER - client will do that)
-    ircClient.connectRaw({
-      host: client.serverConfig.host,
-      port: client.serverConfig.port,
-      tls: client.serverConfig.tls,
-      encoding: client.serverConfig.encoding,
-      webirc: webircConfig,
+    client.ircClient.connect({
+      host,
+      port,
+      tls,
+      encoding,
+      webirc,
       pongTimeout: config.pongTimeout,
+      lookup: config.blockPrivateHosts ? privateAddressGuard : undefined,
     });
-
-    console.log(`[${client.id}] Connecting to ${client.serverConfig.host}:${client.serverConfig.port}`);
+    console.log(`[${client.id}] Connecting to ${host}:${port}`);
   }
 
-  /**
-   * Handle client disconnection
-   */
-  private handleClientDisconnect(client: ConnectedClient, quitMessage: string): void {
-    // Unregister identd entry and disconnect from IRC
-    if (client.ircClient) {
-      const meta = client.ircClient.socketMeta;
-      if (meta && this.identdServer) {
-        this.identdServer.unregister(meta.localPort, meta.remotePort, meta.remoteAddress);
+  /** Lines from the browser; rate limited per line, so one large frame can't carry a flood. */
+  private forwardToServer(client: ConnectedClient, message: string, config: Config): void {
+    const { ircClient, webSocket } = client;
+
+    for (const line of message.split(/[\r\n]+/)) {
+      if (line.length === 0) {
+        continue;
       }
-      client.ircClient.quit(quitMessage);
-    }
+      if (!this.clientManager.allowMessage(client)) {
+        return;
+      }
+      this.clientManager.checkRegistration(client, line);
+      if (!isKeepalive(line)) {
+        this.clientManager.resetIdleTimeout(client, config.idleTimeout);
+      }
 
-    // Remove client from manager
-    this.clientManager.removeClient(client);
-  }
-
-  // ==========================================================================
-  // Message Handling
-  // ==========================================================================
-
-  /**
-   * Handle incoming message from a web client
-   *
-   * Messages are raw IRC commands (e.g., "NICK user", "PRIVMSG #channel :hello")
-   * which are forwarded directly to the IRC server.
-   */
-  private handleClientMessage(client: ConnectedClient, rawMessage: string): void {
-    // Forward raw IRC command to IRC server
-    if (client.ircClient) {
-      // Handle multiple lines (some clients might batch). Rate limiting is
-      // applied per-line, not per-frame: otherwise a single 64 KiB frame
-      // containing thousands of IRC commands would slip through a one-count
-      // check and flood the upstream server.
-      const lines = rawMessage.split(/[\r\n]+/).filter(line => line.length > 0);
-      for (const line of lines) {
-        if (!this.clientManager.handleClientMessage(client, line)) {
-          // Rate limit reached for this window — drop remaining lines in the batch.
-          return;
-        }
-        // Check for registration commands (NICK/USER/CAP/PASS)
-        this.clientManager.checkRegistration(client, line);
-
-        // Reset idle timeout on meaningful traffic (not PING/PONG)
-        const command = line.split(' ')[0]?.toUpperCase();
-        if (command !== 'PING' && command !== 'PONG') {
-          this.clientManager.resetIdleTimeout(client, getConfig().idleTimeout, getConfig().quitMessage);
-        }
-
-        const drained = client.ircClient.send(line);
-        if (!drained && client.ircClient.writable && client.webSocket.readyState === WebSocket.OPEN) {
-          console.info(`[${client.id}] IRC backpressure, pausing WebSocket reads`);
-          client.webSocket.pause();
-          client.ircClient
-            .waitForDrain()
-            .then(() => {
-              console.info(`[${client.id}] IRC drained, resuming WebSocket reads`);
-              if (client.webSocket.readyState === WebSocket.OPEN) {
-                client.webSocket.resume();
-              }
-            })
-            .catch(() => {
-              if (client.webSocket.readyState === WebSocket.OPEN) {
-                client.webSocket.resume();
-              }
-            });
-        }
+      const drained = ircClient.send(line);
+      if (!drained && ircClient.writable && webSocket.readyState === WebSocket.OPEN) {
+        console.info(`[${client.id}] IRC backpressure, pausing WebSocket reads`);
+        webSocket.pause();
+        const resume = (): void => {
+          if (webSocket.readyState === WebSocket.OPEN) {
+            webSocket.resume();
+          }
+        };
+        ircClient.waitForDrain().then(resume, resume);
       }
     }
   }
 
-  /**
-   * Set up event handlers for an IRC client connection
-   */
-  private setupIrcEventHandlers(client: ConnectedClient, ircClient: IrcClient): void {
-    // Register identd entry when TCP socket connects to IRC server
-    ircClient.on('socket connected', (meta: { localPort: number; localAddress: string; remotePort: number; remoteAddress: string } | null) => {
-      if (meta && this.identdServer) {
-        this.identdServer.register(meta.localPort, meta.remotePort, meta.remoteAddress, client.identUsername);
-      }
-    });
+  private forwardToBrowser(client: ConnectedClient, line: string, config: Config): void {
+    if (!isKeepalive(line)) {
+      this.clientManager.resetIdleTimeout(client, config.idleTimeout);
+    }
 
-    // Raw IRC message from server - forward to client
-    ircClient.on('raw', (line: string, inbound: boolean) => {
-      if (inbound) {
-        // console.debug(`[${client.id}] >> ${line}`);
-
-        // Reset idle timeout on meaningful server traffic (not PING/PONG)
-        const command = line.startsWith(':')
-          ? line.split(' ')[1]?.toUpperCase()
-          : line.split(' ')[0]?.toUpperCase();
-        if (command !== 'PING' && command !== 'PONG') {
-          this.clientManager.resetIdleTimeout(client, getConfig().idleTimeout, getConfig().quitMessage);
-        }
-
-        // Send raw IRC line to WebSocket client. If the client is slow and
-        // its buffer fills, pause the IRC socket so upstream data doesn't
-        // pile up in the gateway's memory unbounded.
-        const drained = this.clientManager.sendRawToClient(client.webSocket, line);
-        if (!drained) {
-          console.info(`[${client.id}] WebSocket backpressure, pausing IRC reads`);
-          ircClient.pause();
-          this.waitForClientDrain(client.webSocket, () => {
-            console.info(`[${client.id}] WebSocket drained, resuming IRC reads`);
-            ircClient.resume();
-          });
-        }
-      // } else {
-        // console.debug(`[${client.id}] << ${line}`);
-      }
-    });
-
-    // Connection closed
-    ircClient.on('close', () => {
-      // Unregister identd entry
-      const meta = ircClient.socketMeta;
-      if (meta && this.identdServer) {
-        this.identdServer.unregister(meta.localPort, meta.remotePort, meta.remoteAddress);
-      }
-
-      // Close WebSocket connection when IRC connection closes
-      client.webSocket.close();
-    });
-
-    // Connection error
-    ircClient.on('error', (error: Error) => {
-      console.warn(`[${client.id}] IRC error: ${error.message}`);
-      // Send error as IRC ERROR message
-      this.clientManager.sendRawToClient(client.webSocket, `ERROR :${error.message}`);
-    });
+    const drained = this.clientManager.sendRawToClient(client.webSocket, line);
+    if (!drained && client.webSocket.readyState === WebSocket.OPEN) {
+      console.info(`[${client.id}] WebSocket backpressure, pausing IRC reads`);
+      client.ircClient.pause();
+      this.resumeIrcWhenDrained(client);
+    }
   }
 
-  /**
-   * Poll the WebSocket's buffered bytes until it has room again, then invoke
-   * the drain callback. `ws` doesn't surface a true 'drain' event, so we poll
-   * cheaply rather than hook into the underlying socket. The 50ms cadence
-   * trades a tiny bit of latency for simplicity and zero extra dependencies.
-   */
-  private waitForClientDrain(webSocket: WebSocket, onDrain: () => void): void {
-    const HIGH_WATER_MARK = 1_048_576;
-    const CHECK_INTERVAL_MS = 50;
+  // `ws` has no drain event, so the buffered amount is polled
+  private resumeIrcWhenDrained(client: ConnectedClient): void {
     const poll = (): void => {
-      if (webSocket.readyState !== WebSocket.OPEN) {
-        // Socket closed — no need to resume; the IRC client will be torn down.
+      if (client.webSocket.readyState !== WebSocket.OPEN) {
         return;
       }
-      if (webSocket.bufferedAmount < HIGH_WATER_MARK / 2) {
-        onDrain();
+      if (client.webSocket.bufferedAmount < WS_BUFFER_LOW_WATER_MARK) {
+        console.info(`[${client.id}] WebSocket drained, resuming IRC reads`);
+        client.ircClient.resume();
         return;
       }
-      setTimeout(poll, CHECK_INTERVAL_MS);
+      setTimeout(poll, WS_DRAIN_POLL_MS);
     };
-    setTimeout(poll, CHECK_INTERVAL_MS);
+    setTimeout(poll, WS_DRAIN_POLL_MS);
   }
 }

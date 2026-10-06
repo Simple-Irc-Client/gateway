@@ -5,28 +5,9 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { normalizeIpv6, isPrivateHost } from './security.js';
+import { isPrivateHost, privateAddressGuard } from './security.js';
 
 describe('Security Functions', () => {
-  describe('normalizeIpv6', () => {
-    it('normalizes simple IPv6 addresses', () => {
-      expect(normalizeIpv6('2001:db8::1')).toBe('2001:0db8:0000:0000:0000:0000:0000:0001');
-      expect(normalizeIpv6('::1')).toBe('0000:0000:0000:0000:0000:0000:0000:0001');
-      expect(normalizeIpv6('::')).toBe('0000:0000:0000:0000:0000:0000:0000:0000');
-    });
-
-    it('returns null for invalid IPv6 addresses', () => {
-      expect(normalizeIpv6('invalid')).toBeNull();
-      expect(normalizeIpv6('2001::25de::cade')).toBeNull(); // Multiple ::
-      expect(normalizeIpv6('2001:0db8:0000:0000:0000:0000:0000:0000:0001')).toBeNull(); // Too many groups
-    });
-
-    it('handles mixed case input', () => {
-      expect(normalizeIpv6('2001:DB8::1')).toBe('2001:0db8:0000:0000:0000:0000:0000:0001');
-      expect(normalizeIpv6('::1')).toBe('0000:0000:0000:0000:0000:0000:0000:0001');
-    });
-  });
-
   describe('isPrivateHost', () => {
     describe('IPv4 private ranges', () => {
       it('blocks loopback addresses', () => {
@@ -142,11 +123,35 @@ describe('Security Functions', () => {
         expect(isPrivateHost('999.999.999.999')).toBe(false);
       });
 
-      it('handles IPv6 with zone IDs', () => {
-        // Zone IDs should be stripped by the caller before validation
-        // This is expected to return false since we don't strip zone IDs
-        expect(isPrivateHost('fe80::1%eth0')).toBe(false);
+      it('blocks link-local IPv6 with a zone ID', () => {
+        expect(isPrivateHost('fe80::1%eth0')).toBe(true);
       });
+
+      it('blocks deprecated IPv4-compatible IPv6 addresses', () => {
+        expect(isPrivateHost('::127.0.0.1')).toBe(true);
+        expect(isPrivateHost('::8.8.8.8')).toBe(true);
+      });
+    });
+  });
+
+  describe('privateAddressGuard', () => {
+    const resolve = (hostname: string, all: boolean): Promise<unknown> =>
+      new Promise((done, fail) => {
+        privateAddressGuard(hostname, { all }, (error, address) => (error ? fail(error) : done(address)));
+      });
+
+    it('refuses a hostname that resolves to a private address', async () => {
+      await expect(resolve('localhost', false)).rejects.toThrow('private address');
+      await expect(resolve('localhost', true)).rejects.toThrow('private address');
+    });
+
+    it('passes a public address through in both callback forms', async () => {
+      await expect(resolve('8.8.8.8', false)).resolves.toBe('8.8.8.8');
+      await expect(resolve('8.8.8.8', true)).resolves.toEqual([{ address: '8.8.8.8', family: 4 }]);
+    });
+
+    it('passes DNS errors through', async () => {
+      await expect(resolve('does-not-exist.invalid', false)).rejects.toThrow();
     });
   });
 });

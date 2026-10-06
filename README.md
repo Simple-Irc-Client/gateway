@@ -11,7 +11,7 @@ pnpm install
 pnpm start
 ```
 
-Gateway runs on `ws://localhost:8667/irc`
+Gateway runs on `ws://localhost:8667/webirc`
 
 ## Testing
 
@@ -52,7 +52,7 @@ sudo apt install caddy
 
 ```
 irc.yourdomain.com {
-    reverse_proxy /irc localhost:8667
+    reverse_proxy /webirc localhost:8667
 }
 ```
 
@@ -70,7 +70,7 @@ server {
     ssl_certificate /path/to/cert.pem;
     ssl_certificate_key /path/to/key.pem;
 
-    location /irc {
+    location /webirc {
         proxy_pass http://127.0.0.1:8667;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -105,10 +105,17 @@ secret. Re-run `bootstrap.sh` (as root) after changing the package set or sudoer
 |----------|---------|-------------|
 | `PORT` | 8667 | Server port |
 | `HOST` | 0.0.0.0 | Bind address |
-| `PATH_PREFIX` | /irc | WebSocket path |
+| `PATH_PREFIX` | /webirc | WebSocket path |
+| `ALLOWED_ORIGINS` | `https://app.simpleircclient.com` | Comma-separated WebSocket `Origin` values; set this to your own frontend's origin |
+| `ALLOWED_SERVERS` | - | Comma-separated list (e.g., `irc.libera.chat:6697`); empty allows all |
+| `TRUST_PROXY` | false | Read the client IP from `X-Forwarded-For`; enable only behind a reverse proxy |
 | `WEBIRC_PASSWORD` | - | WEBIRC password (optional) |
 | `WEBIRC_GATEWAY` | gateway | WEBIRC gateway name |
-| `ALLOWED_SERVERS` | - | Comma-separated list (e.g., `irc.libera.chat:6697`) |
+| `PONG_TIMEOUT` | 120 | Seconds to wait for the IRC server's PONG |
+| `WS_PING_INTERVAL` | 30 | Seconds between WebSocket keepalive pings |
+| `WS_PONG_TIMEOUT` | 120 | Seconds to wait for a WebSocket pong before disconnecting |
+| `REGISTRATION_TIMEOUT` | 30 | Seconds for the client to send NICK/USER (0 disables) |
+| `IDLE_TIMEOUT` | 600 | Seconds before an idle client is disconnected (0 disables) |
 | `IDENTD_ENABLED` | false | Enable identd (RFC 1413) server |
 | `IDENTD_PORT` | 113 | Identd listen port |
 | `IDENTD_TIMEOUT` | 30 | Identd connection timeout (seconds) |
@@ -137,12 +144,18 @@ To forward real client IPs to IRC servers:
 
 1. Request WEBIRC access from the IRC network
 2. Set `WEBIRC_PASSWORD` environment variable
-3. Gateway sends client IP to IRC server
+3. Behind a reverse proxy, set `TRUST_PROXY=true`, otherwise the proxy's IP is forwarded
 
 ## Frontend Configuration
 
-Update your frontend to connect to the gateway:
+Build `core` in gateway mode with the gateway's address in `core/.env.gateway`:
 
-```typescript
-const WS_URL = 'wss://irc.yourdomain.com/irc';
+```bash
+VITE_GATEWAY_HOST=irc.yourdomain.com
+VITE_GATEWAY_PORT=443
+VITE_GATEWAY_PATH=/webirc
+```
+
+```bash
+pnpm run build:gateway
 ```

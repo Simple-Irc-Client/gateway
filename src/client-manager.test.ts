@@ -6,8 +6,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { ClientManager } from './client-manager.js';
-import { RATE_LIMIT_MAX_MESSAGES, RATE_LIMIT_WINDOW_MS } from './constants.js';
+import { ClientManager, RATE_LIMIT_MAX_MESSAGES, RATE_LIMIT_WINDOW_MS } from './client-manager.js';
+import { IrcClient } from './irc-client.js';
 
 // Mock WebSocket class for testing
 class MockWebSocket {
@@ -64,13 +64,13 @@ describe('ClientManager', () => {
       expect(client.id).toMatch(/^c\d+$/);
       expect(client.ipAddress).toBe('127.0.0.1');
       expect(client.webSocket).toBe(mockWebSocket);
-      expect(client.ircClient).toBeNull();
+      expect(client.ircClient).toBeInstanceOf(IrcClient);
       expect(client.serverConfig).toEqual(serverConfig);
       expect(client.identUsername).toBe('testuser');
       expect(client.isRegistered).toBe(false);
 
       // Check that client is tracked
-      expect(clientManager.getClient(client.id)).toBe(client);
+      expect(clientManager.getAllClients()).toContain(client);
       expect(clientManager.getAllClients()).toContain(client);
     });
 
@@ -89,8 +89,8 @@ describe('ClientManager', () => {
 
       // Set up some timers
       clientManager.startWsPing(client, 30, 5);
-      clientManager.startRegistrationTimeout(client, 10, 'Test quit');
-      clientManager.resetIdleTimeout(client, 30, 'Test quit');
+      clientManager.startRegistrationTimeout(client, 10);
+      clientManager.resetIdleTimeout(client, 30);
 
       expect(client.wsPingTimer).not.toBeNull();
       expect(client.registrationTimer).not.toBeNull();
@@ -102,7 +102,7 @@ describe('ClientManager', () => {
       expect(client.wsPingTimer).toBeNull();
       expect(client.registrationTimer).toBeNull();
       expect(client.idleTimer).toBeNull();
-      expect(clientManager.getClient(client.id)).toBeUndefined();
+      expect(clientManager.getAllClients()).not.toContain(client);
       expect(clientManager.getAllClients()).not.toContain(client);
     });
 
@@ -144,7 +144,7 @@ describe('ClientManager', () => {
       // Send messages within limit
       for (let i = 0; i < RATE_LIMIT_MAX_MESSAGES; i++) {
         mockDateNow.mockReturnValue(currentTime + i * 100);
-        const result = clientManager.handleClientMessage(client, `MESSAGE ${i}`);
+        const result = clientManager.allowMessage(client);
         expect(result).toBe(true);
       }
 
@@ -163,12 +163,12 @@ describe('ClientManager', () => {
       // Fill up the rate limit window (all within the same window)
       for (let i = 0; i < RATE_LIMIT_MAX_MESSAGES; i++) {
         mockDateNow.mockReturnValue(currentTime + i * 10);
-        clientManager.handleClientMessage(client, `MESSAGE ${i}`);
+        clientManager.allowMessage(client);
       }
 
       // Next message should be blocked (still within the same window)
       mockDateNow.mockReturnValue(currentTime + RATE_LIMIT_MAX_MESSAGES * 10);
-      const result = clientManager.handleClientMessage(client, 'MESSAGE extra');
+      const result = clientManager.allowMessage(client);
       
       expect(result).toBe(false);
       expect(client.messageCount).toBe(RATE_LIMIT_MAX_MESSAGES + 1);
@@ -182,14 +182,14 @@ describe('ClientManager', () => {
 
       // Fill up the rate limit window
       for (let i = 0; i < RATE_LIMIT_MAX_MESSAGES; i++) {
-        clientManager.handleClientMessage(client, `MESSAGE ${i}`);
+        clientManager.allowMessage(client);
       }
 
       // Advance time past the rate limit window
       vi.advanceTimersByTime(RATE_LIMIT_WINDOW_MS + 1);
 
       // Should be able to send messages again
-      const result = clientManager.handleClientMessage(client, 'MESSAGE after reset');
+      const result = clientManager.allowMessage(client);
       expect(result).toBe(true);
       expect(client.messageCount).toBe(1);
     });
@@ -275,7 +275,7 @@ describe('ClientManager', () => {
       const serverConfig = { host: 'irc.example.com', port: 6667, tls: true, encoding: 'utf8' };
       const client = clientManager.createClient(mockWebSocket as any, '127.0.0.1', serverConfig, 'testuser');
 
-      clientManager.startRegistrationTimeout(client, 10, 'Registration timeout');
+      clientManager.startRegistrationTimeout(client, 10);
 
       // Advance time to trigger timeout
       vi.advanceTimersByTime(10 * 1000);
@@ -289,7 +289,7 @@ describe('ClientManager', () => {
       const serverConfig = { host: 'irc.example.com', port: 6667, tls: true, encoding: 'utf8' };
       const client = clientManager.createClient(mockWebSocket as any, '127.0.0.1', serverConfig, 'testuser');
 
-      clientManager.startRegistrationTimeout(client, 10, 'Registration timeout');
+      clientManager.startRegistrationTimeout(client, 10);
 
       // Client registers before timeout
       vi.advanceTimersByTime(5 * 1000); // Halfway through timeout period
@@ -306,10 +306,10 @@ describe('ClientManager', () => {
       const serverConfig = { host: 'irc.example.com', port: 6667, tls: true, encoding: 'utf8' };
       const client = clientManager.createClient(mockWebSocket as any, '127.0.0.1', serverConfig, 'testuser');
 
-      clientManager.startRegistrationTimeout(client, 0, 'Registration timeout');
+      clientManager.startRegistrationTimeout(client, 0);
       expect(client.registrationTimer).toBeNull();
 
-      clientManager.startRegistrationTimeout(client, -1, 'Registration timeout');
+      clientManager.startRegistrationTimeout(client, -1);
       expect(client.registrationTimer).toBeNull();
     });
   });
@@ -319,7 +319,7 @@ describe('ClientManager', () => {
       const serverConfig = { host: 'irc.example.com', port: 6667, tls: true, encoding: 'utf8' };
       const client = clientManager.createClient(mockWebSocket as any, '127.0.0.1', serverConfig, 'testuser');
 
-      clientManager.resetIdleTimeout(client, 10, 'Idle timeout');
+      clientManager.resetIdleTimeout(client, 10);
 
       // Advance time to trigger timeout
       vi.advanceTimersByTime(10 * 1000);
@@ -333,13 +333,13 @@ describe('ClientManager', () => {
       const serverConfig = { host: 'irc.example.com', port: 6667, tls: true, encoding: 'utf8' };
       const client = clientManager.createClient(mockWebSocket as any, '127.0.0.1', serverConfig, 'testuser');
 
-      clientManager.resetIdleTimeout(client, 10, 'Idle timeout');
+      clientManager.resetIdleTimeout(client, 10);
 
       // Advance halfway through timeout period
       vi.advanceTimersByTime(5 * 1000);
 
       // Reset timeout due to meaningful traffic
-      clientManager.resetIdleTimeout(client, 10, 'Idle timeout');
+      clientManager.resetIdleTimeout(client, 10);
 
       // Advance another 5 seconds - should not timeout yet
       vi.advanceTimersByTime(5 * 1000);
@@ -354,10 +354,10 @@ describe('ClientManager', () => {
       const serverConfig = { host: 'irc.example.com', port: 6667, tls: true, encoding: 'utf8' };
       const client = clientManager.createClient(mockWebSocket as any, '127.0.0.1', serverConfig, 'testuser');
 
-      clientManager.resetIdleTimeout(client, 0, 'Idle timeout');
+      clientManager.resetIdleTimeout(client, 0);
       expect(client.idleTimer).toBeNull();
 
-      clientManager.resetIdleTimeout(client, -1, 'Idle timeout');
+      clientManager.resetIdleTimeout(client, -1);
       expect(client.idleTimer).toBeNull();
     });
   });
@@ -403,7 +403,7 @@ describe('ClientManager', () => {
       const serverConfig = { host: 'irc.example.com', port: 6667, tls: true, encoding: 'utf8' };
       const client = clientManager.createClient(mockWebSocket as any, '127.0.0.1', serverConfig, 'testuser');
 
-      clientManager.startRegistrationTimeout(client, 10, 'Test quit');
+      clientManager.startRegistrationTimeout(client, 10);
       clientManager.removeClient(client);
 
       vi.advanceTimersByTime(10 * 1000);
@@ -416,7 +416,7 @@ describe('ClientManager', () => {
       const serverConfig = { host: 'irc.example.com', port: 6667, tls: true, encoding: 'utf8' };
       const client = clientManager.createClient(mockWebSocket as any, '127.0.0.1', serverConfig, 'testuser');
 
-      clientManager.resetIdleTimeout(client, 10, 'Test quit');
+      clientManager.resetIdleTimeout(client, 10);
       clientManager.removeClient(client);
 
       vi.advanceTimersByTime(10 * 1000);

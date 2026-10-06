@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Gateway } from './gateway.js';
 import { loadConfig } from './config.js';
 import { IrcClient } from './irc-client.js';
+import { IdentdServer } from './identd.js';
 import WebSocket from 'ws';
 import { createServer as createTcpServer, type Server as TcpServer } from 'node:net';
 
@@ -19,12 +20,12 @@ describe('Gateway', () => {
     return `ws://127.0.0.1:${TEST_PORT}/webirc?${params.toString()}`;
   };
 
-  beforeEach(() => {
+  beforeEach(async () => {
     // eslint-disable-next-line @typescript-eslint/no-empty-function
-    vi.spyOn(IrcClient.prototype, 'connectRaw').mockImplementation(() => {});
+    vi.spyOn(IrcClient.prototype, 'connect').mockImplementation(() => {});
     loadConfig({ port: TEST_PORT, host: '127.0.0.1', path: '/webirc', allowedOrigins: [], blockPrivateHosts: false });
     gateway = new Gateway();
-    gateway.start();
+    await gateway.start();
   });
 
   afterEach(async () => {
@@ -84,7 +85,7 @@ describe('Gateway', () => {
     loadConfig({ port: TEST_PORT, host: '127.0.0.1', path: '/webirc', maxConnectionsPerIp: 2, allowedOrigins: [], blockPrivateHosts: false });
     await gateway.stop();
     gateway = new Gateway();
-    gateway.start();
+    await gateway.start();
 
     await new Promise((r) => setTimeout(r, 50));
 
@@ -141,7 +142,7 @@ describe('Gateway', () => {
     });
     await gateway.stop();
     gateway = new Gateway();
-    gateway.start();
+    await gateway.start();
 
     await new Promise((r) => setTimeout(r, 50));
 
@@ -168,7 +169,7 @@ describe('Gateway', () => {
     });
     await gateway.stop();
     gateway = new Gateway();
-    gateway.start();
+    await gateway.start();
 
     await new Promise((r) => setTimeout(r, 50));
 
@@ -195,7 +196,7 @@ describe('Gateway', () => {
       });
       await gateway.stop();
       gateway = new Gateway();
-      gateway.start();
+      await gateway.start();
 
       await new Promise((r) => setTimeout(r, 50));
 
@@ -221,7 +222,7 @@ describe('Gateway', () => {
       });
       await gateway.stop();
       gateway = new Gateway();
-      gateway.start();
+      await gateway.start();
 
       await new Promise((r) => setTimeout(r, 50));
 
@@ -246,7 +247,7 @@ describe('Gateway', () => {
       });
       await gateway.stop();
       gateway = new Gateway();
-      gateway.start();
+      await gateway.start();
 
       await new Promise((r) => setTimeout(r, 50));
 
@@ -273,7 +274,7 @@ describe('Gateway', () => {
       });
       await gateway.stop();
       gateway = new Gateway();
-      gateway.start();
+      await gateway.start();
 
       await new Promise((r) => setTimeout(r, 50));
 
@@ -300,7 +301,7 @@ describe('Gateway', () => {
       });
       await gateway.stop();
       gateway = new Gateway();
-      gateway.start();
+      await gateway.start();
 
       await new Promise((r) => setTimeout(r, 50));
 
@@ -324,7 +325,7 @@ describe('Gateway', () => {
       loadConfig({ port: TEST_PORT, host: '127.0.0.1', path: '/webirc', allowedOrigins: [], blockPrivateHosts: true });
       await gateway.stop();
       gateway = new Gateway();
-      gateway.start();
+      await gateway.start();
     });
 
     it('blocks connections to localhost', async () => {
@@ -507,7 +508,7 @@ describe('Gateway', () => {
       });
       await gateway.stop();
       gateway = new Gateway();
-      gateway.start();
+      await gateway.start();
 
       await new Promise((r) => setTimeout(r, 50));
 
@@ -530,7 +531,7 @@ describe('Gateway', () => {
     let receivedLines: string[];
 
     beforeEach(async () => {
-      vi.mocked(IrcClient.prototype.connectRaw).mockRestore();
+      vi.mocked(IrcClient.prototype.connect).mockRestore();
       receivedLines = [];
       ircServer = createTcpServer((socket) => {
         socket.on('data', (data) => {
@@ -639,7 +640,7 @@ describe('Gateway', () => {
       });
       await gateway.stop();
       gateway = new Gateway();
-      gateway.start();
+      await gateway.start();
 
       const ws = new WebSocket(createWsUrl('irc.example.com', 6667, false));
 
@@ -664,7 +665,7 @@ describe('Gateway', () => {
       });
       await gateway.stop();
       gateway = new Gateway();
-      gateway.start();
+      await gateway.start();
 
       const ws = new WebSocket(createWsUrl('irc.example.com', 6667, false));
 
@@ -688,7 +689,7 @@ describe('Gateway', () => {
       });
       await gateway.stop();
       gateway = new Gateway();
-      gateway.start();
+      await gateway.start();
 
       const ws = new WebSocket(createWsUrl('irc.example.com', 6697, true));
 
@@ -702,18 +703,18 @@ describe('Gateway', () => {
       ws.close();
     });
 
-    it('allows insecure connections with allowInsecure override when enforceTls is true', async () => {
-      loadConfig({ 
-        port: TEST_PORT, 
-        host: '127.0.0.1', 
-        path: '/webirc', 
-        allowedOrigins: [], 
+    it('ignores an allowInsecure parameter when enforceTls is true', async () => {
+      loadConfig({
+        port: TEST_PORT,
+        host: '127.0.0.1',
+        path: '/webirc',
+        allowedOrigins: [],
         blockPrivateHosts: false,
         enforceTls: true
       });
       await gateway.stop();
       gateway = new Gateway();
-      gateway.start();
+      await gateway.start();
 
       const params = new URLSearchParams({
         host: 'irc.example.com',
@@ -723,14 +724,37 @@ describe('Gateway', () => {
       });
       const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT}/webirc?${params.toString()}`);
 
-      await new Promise<void>((resolve, reject) => {
-        ws.on('open', () => resolve());
-        ws.on('error', reject);
-        setTimeout(() => reject(new Error('timeout')), 1000);
-      });
+      await expect(
+        new Promise<void>((resolve, reject) => {
+          ws.on('open', () => reject(new Error('should not connect')));
+          ws.on('error', () => resolve());
+          setTimeout(() => reject(new Error('timeout')), 1000);
+        })
+      ).resolves.toBeUndefined();
+    });
 
-      expect(ws.readyState).toBe(WebSocket.OPEN);
-      ws.close();
+    it('refuses a non-TLS IRC connection while WEBIRC is configured', async () => {
+      loadConfig({
+        port: TEST_PORT,
+        host: '127.0.0.1',
+        path: '/webirc',
+        allowedOrigins: [],
+        blockPrivateHosts: false,
+        webircPassword: 'secret',
+      });
+      await gateway.stop();
+      gateway = new Gateway();
+      await gateway.start();
+      vi.mocked(IrcClient.prototype.connect).mockClear();
+
+      const ws = new WebSocket(createWsUrl('irc.example.com', 6667, false));
+      const messages: string[] = [];
+      ws.on('message', (data) => messages.push(data.toString()));
+
+      await new Promise<void>((resolve) => ws.on('close', () => resolve()));
+
+      expect(messages).toContain('ERROR :Connection rejected — TLS required');
+      expect(IrcClient.prototype.connect).not.toHaveBeenCalled();
     });
   });
 
@@ -747,7 +771,7 @@ describe('Gateway', () => {
       });
       await gateway.stop();
       gateway = new Gateway();
-      gateway.start();
+      await gateway.start();
 
       await new Promise((r) => setTimeout(r, 50));
 
@@ -779,7 +803,7 @@ describe('Gateway', () => {
       });
       await gateway.stop();
       gateway = new Gateway();
-      gateway.start();
+      await gateway.start();
 
       await new Promise((r) => setTimeout(r, 50));
 
@@ -813,7 +837,7 @@ describe('Gateway', () => {
       });
       await gateway.stop();
       gateway = new Gateway();
-      gateway.start();
+      await gateway.start();
 
       await new Promise((r) => setTimeout(r, 50));
 
@@ -843,7 +867,7 @@ describe('Gateway', () => {
       });
       await gateway.stop();
       gateway = new Gateway();
-      gateway.start();
+      await gateway.start();
 
       await new Promise((r) => setTimeout(r, 50));
 
@@ -876,7 +900,7 @@ describe('Gateway', () => {
       });
       await gateway.stop();
       gateway = new Gateway();
-      gateway.start();
+      await gateway.start();
 
       await new Promise((r) => setTimeout(r, 50));
 
@@ -906,7 +930,7 @@ describe('Gateway', () => {
       });
       await gateway.stop();
       gateway = new Gateway();
-      gateway.start();
+      await gateway.start();
 
       await new Promise((r) => setTimeout(r, 50));
 
@@ -936,7 +960,7 @@ describe('Gateway', () => {
       });
       await gateway.stop();
       gateway = new Gateway();
-      gateway.start();
+      await gateway.start();
 
       await new Promise((r) => setTimeout(r, 50));
 
@@ -972,7 +996,7 @@ describe('Gateway', () => {
       });
       await gateway.stop();
       gateway = new Gateway();
-      gateway.start();
+      await gateway.start();
 
       await new Promise((r) => setTimeout(r, 50));
 
@@ -1003,7 +1027,7 @@ describe('Gateway', () => {
       });
       await gateway.stop();
       gateway = new Gateway();
-      gateway.start();
+      await gateway.start();
 
       await new Promise((r) => setTimeout(r, 50));
 
@@ -1056,7 +1080,7 @@ describe('Gateway', () => {
 
       // Restart for afterEach
       gateway = new Gateway();
-      gateway.start();
+      await gateway.start();
       await new Promise((r) => setTimeout(r, 50));
     });
   });
@@ -1074,7 +1098,7 @@ describe('Gateway', () => {
       });
       await gateway.stop();
       gateway = new Gateway();
-      gateway.start();
+      await gateway.start();
 
       await new Promise((r) => setTimeout(r, 50));
 
@@ -1115,7 +1139,7 @@ describe('Gateway', () => {
       });
       await gateway.stop();
       gateway = new Gateway();
-      gateway.start();
+      await gateway.start();
 
       await new Promise((r) => setTimeout(r, 50));
 
@@ -1126,7 +1150,7 @@ describe('Gateway', () => {
 
       ws.on('message', (data) => messages.push(data.toString()));
 
-      // Send a message — IRC socket is null (connectRaw is mocked), so send() returns false.
+      // Send a message — IRC socket is null (connect is mocked), so send() returns false.
       // Before the fix, this would permanently pause the WebSocket, preventing close handshake.
       ws.send('PRIVMSG #test :hello');
 
@@ -1144,6 +1168,43 @@ describe('Gateway', () => {
     });
   });
 
+  describe('Identd', () => {
+    it('unregisters the ident entry when the IRC server closes the connection', async () => {
+      vi.mocked(IrcClient.prototype.connect).mockRestore();
+      const register = vi.spyOn(IdentdServer.prototype, 'register');
+      const unregister = vi.spyOn(IdentdServer.prototype, 'unregister');
+
+      const ircServer = createTcpServer((socket) => {
+        // Hang up right after accepting, as a server rejecting the client would
+        setTimeout(() => socket.destroy(), 50);
+      });
+      await new Promise<void>((resolve) => ircServer.listen(0, '127.0.0.1', resolve));
+      const ircServerPort = (ircServer.address() as { port: number }).port;
+
+      loadConfig({
+        port: TEST_PORT,
+        host: '127.0.0.1',
+        path: '/webirc',
+        allowedOrigins: [],
+        blockPrivateHosts: false,
+        identdEnabled: true,
+        identdPort: 18113,
+      });
+      await gateway.stop();
+      gateway = new Gateway();
+      await gateway.start();
+
+      const ws = new WebSocket(createWsUrl('127.0.0.1', ircServerPort));
+      await new Promise<void>((resolve) => ws.on('close', () => resolve()));
+
+      expect(register).toHaveBeenCalledTimes(1);
+      const [localPort, remotePort, remoteHost] = register.mock.calls[0] ?? [];
+      expect(unregister).toHaveBeenCalledWith(localPort, remotePort, remoteHost);
+
+      await new Promise<void>((resolve) => ircServer.close(() => resolve()));
+    });
+  });
+
   describe('SSRF logging', () => {
     it('rejects connections to private hosts with blockPrivateHosts enabled', async () => {
       loadConfig({
@@ -1155,7 +1216,7 @@ describe('Gateway', () => {
       });
       await gateway.stop();
       gateway = new Gateway();
-      gateway.start();
+      await gateway.start();
 
       await new Promise((r) => setTimeout(r, 50));
 

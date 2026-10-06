@@ -247,4 +247,17 @@ describe('IdentdServer', () => {
 
     expect(rejected).toBe(true);
   });
+
+  it('stops without waiting for idle query connections to time out', async () => {
+    const socket = net.connect({ port: TEST_PORT, host: '127.0.0.1' });
+    socket.on('error', () => undefined);
+    await new Promise<void>((resolve) => socket.on('connect', () => resolve()));
+    await new Promise((r) => setTimeout(r, 50));
+
+    const started = Date.now();
+    await server.stop();
+
+    // The server's query timeout is 5 s
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
 });
