@@ -90,18 +90,15 @@ describe('ClientManager', () => {
       // Set up some timers
       clientManager.startWsPing(client, 30, 5);
       clientManager.startRegistrationTimeout(client, 10);
-      clientManager.resetIdleTimeout(client, 30);
 
       expect(client.wsPingTimer).not.toBeNull();
       expect(client.registrationTimer).not.toBeNull();
-      expect(client.idleTimer).not.toBeNull();
 
       // Remove client
       clientManager.removeClient(client);
 
       expect(client.wsPingTimer).toBeNull();
       expect(client.registrationTimer).toBeNull();
-      expect(client.idleTimer).toBeNull();
       expect(clientManager.getAllClients()).not.toContain(client);
       expect(clientManager.getAllClients()).not.toContain(client);
     });
@@ -314,54 +311,6 @@ describe('ClientManager', () => {
     });
   });
 
-  describe('Idle Timeout', () => {
-    it('closes connection when idle timeout expires', () => {
-      const serverConfig = { host: 'irc.example.com', port: 6667, tls: true, encoding: 'utf8' };
-      const client = clientManager.createClient(mockWebSocket as any, '127.0.0.1', serverConfig, 'testuser');
-
-      clientManager.resetIdleTimeout(client, 10);
-
-      // Advance time to trigger timeout
-      vi.advanceTimersByTime(10 * 1000);
-
-      // Connection should be closed and error sent
-      expect(mockWebSocket.closed).toBe(true);
-      expect(mockWebSocket.sentMessages).toContain('ERROR :Idle timeout (10s)');
-    });
-
-    it('resets idle timeout on meaningful traffic', () => {
-      const serverConfig = { host: 'irc.example.com', port: 6667, tls: true, encoding: 'utf8' };
-      const client = clientManager.createClient(mockWebSocket as any, '127.0.0.1', serverConfig, 'testuser');
-
-      clientManager.resetIdleTimeout(client, 10);
-
-      // Advance halfway through timeout period
-      vi.advanceTimersByTime(5 * 1000);
-
-      // Reset timeout due to meaningful traffic
-      clientManager.resetIdleTimeout(client, 10);
-
-      // Advance another 5 seconds - should not timeout yet
-      vi.advanceTimersByTime(5 * 1000);
-      expect(mockWebSocket.closed).toBe(false);
-
-      // Advance remaining 5 seconds - should timeout now
-      vi.advanceTimersByTime(5 * 1000);
-      expect(mockWebSocket.closed).toBe(true);
-    });
-
-    it('does not start timeout when timeout is 0 or negative', () => {
-      const serverConfig = { host: 'irc.example.com', port: 6667, tls: true, encoding: 'utf8' };
-      const client = clientManager.createClient(mockWebSocket as any, '127.0.0.1', serverConfig, 'testuser');
-
-      clientManager.resetIdleTimeout(client, 0);
-      expect(client.idleTimer).toBeNull();
-
-      clientManager.resetIdleTimeout(client, -1);
-      expect(client.idleTimer).toBeNull();
-    });
-  });
-
   describe('clientCount', () => {
     it('returns the number of connected clients without allocating an array', () => {
       const serverConfig = { host: 'irc.example.com', port: 6667, tls: true, encoding: 'utf8' };
@@ -410,19 +359,6 @@ describe('ClientManager', () => {
 
       expect(mockWebSocket.closed).toBe(false);
       expect(mockWebSocket.sentMessages).not.toContain('ERROR :Registration timeout');
-    });
-
-    it('idle timeout callback does not fire after removal', () => {
-      const serverConfig = { host: 'irc.example.com', port: 6667, tls: true, encoding: 'utf8' };
-      const client = clientManager.createClient(mockWebSocket as any, '127.0.0.1', serverConfig, 'testuser');
-
-      clientManager.resetIdleTimeout(client, 10);
-      clientManager.removeClient(client);
-
-      vi.advanceTimersByTime(10 * 1000);
-
-      expect(mockWebSocket.closed).toBe(false);
-      expect(mockWebSocket.sentMessages.length).toBe(0);
     });
 
     it('ping timer callback does not fire after removal', () => {

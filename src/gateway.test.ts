@@ -863,7 +863,6 @@ describe('Gateway', () => {
         allowedOrigins: [],
         blockPrivateHosts: false,
         registrationTimeout: 1,
-        idleTimeout: 0,
       });
       await gateway.stop();
       gateway = new Gateway();
@@ -896,7 +895,6 @@ describe('Gateway', () => {
         allowedOrigins: [],
         blockPrivateHosts: false,
         registrationTimeout: 1,
-        idleTimeout: 0,
       });
       await gateway.stop();
       gateway = new Gateway();
@@ -926,7 +924,6 @@ describe('Gateway', () => {
         allowedOrigins: [],
         blockPrivateHosts: false,
         registrationTimeout: 1,
-        idleTimeout: 0,
       });
       await gateway.stop();
       gateway = new Gateway();
@@ -940,102 +937,6 @@ describe('Gateway', () => {
 
       ws.send('USER testuser 0 * :Test');
 
-      await new Promise((r) => setTimeout(r, 1500));
-
-      expect(ws.readyState).toBe(WebSocket.OPEN);
-      ws.close();
-    });
-  });
-
-  describe('Idle timeout', () => {
-    it('disconnects clients with no meaningful IRC traffic', async () => {
-      loadConfig({
-        port: TEST_PORT,
-        host: '127.0.0.1',
-        path: '/webirc',
-        allowedOrigins: [],
-        blockPrivateHosts: false,
-        registrationTimeout: 0,
-        idleTimeout: 1,
-      });
-      await gateway.stop();
-      gateway = new Gateway();
-      await gateway.start();
-
-      await new Promise((r) => setTimeout(r, 50));
-
-      const ws = new WebSocket(createWsUrl());
-      const messages: string[] = [];
-
-      await new Promise<void>((resolve) => ws.on('open', resolve));
-
-      ws.on('message', (data) => messages.push(data.toString()));
-
-      // Send only PING — should not reset idle timer
-      await new Promise((r) => setTimeout(r, 500));
-      ws.send('PING test');
-
-      const closed = await new Promise<boolean>((resolve) => {
-        ws.on('close', () => resolve(true));
-        setTimeout(() => resolve(false), 3000);
-      });
-
-      expect(closed).toBe(true);
-      expect(messages.some((m) => m.includes('Idle timeout'))).toBe(true);
-    });
-
-    it('resets idle timer on meaningful traffic', async () => {
-      loadConfig({
-        port: TEST_PORT,
-        host: '127.0.0.1',
-        path: '/webirc',
-        allowedOrigins: [],
-        blockPrivateHosts: false,
-        registrationTimeout: 0,
-        idleTimeout: 2,
-      });
-      await gateway.stop();
-      gateway = new Gateway();
-      await gateway.start();
-
-      await new Promise((r) => setTimeout(r, 50));
-
-      const ws = new WebSocket(createWsUrl());
-
-      await new Promise<void>((resolve) => ws.on('open', resolve));
-
-      // Send meaningful traffic at 1s — resets the 2s idle timer
-      await new Promise((r) => setTimeout(r, 1000));
-      ws.send('NICK testuser');
-
-      // At 2.5s total — would have timed out without the reset
-      await new Promise((r) => setTimeout(r, 1500));
-
-      expect(ws.readyState).toBe(WebSocket.OPEN);
-      ws.close();
-    });
-
-    it('does not disconnect when idle timeout is disabled', async () => {
-      loadConfig({
-        port: TEST_PORT,
-        host: '127.0.0.1',
-        path: '/webirc',
-        allowedOrigins: [],
-        blockPrivateHosts: false,
-        registrationTimeout: 0,
-        idleTimeout: 0,
-      });
-      await gateway.stop();
-      gateway = new Gateway();
-      await gateway.start();
-
-      await new Promise((r) => setTimeout(r, 50));
-
-      const ws = new WebSocket(createWsUrl());
-
-      await new Promise<void>((resolve) => ws.on('open', resolve));
-
-      // Wait a while — should stay connected
       await new Promise((r) => setTimeout(r, 1500));
 
       expect(ws.readyState).toBe(WebSocket.OPEN);
@@ -1094,7 +995,6 @@ describe('Gateway', () => {
         allowedOrigins: [],
         blockPrivateHosts: false,
         registrationTimeout: 0,
-        idleTimeout: 0,
       });
       await gateway.stop();
       gateway = new Gateway();
@@ -1134,8 +1034,7 @@ describe('Gateway', () => {
         path: '/webirc',
         allowedOrigins: [],
         blockPrivateHosts: false,
-        registrationTimeout: 0,
-        idleTimeout: 1,
+        registrationTimeout: 1,
       });
       await gateway.stop();
       gateway = new Gateway();
@@ -1156,7 +1055,7 @@ describe('Gateway', () => {
 
       await new Promise((r) => setTimeout(r, 200));
 
-      // The idle timer should still be able to close the WebSocket.
+      // The registration timer should still be able to close the WebSocket.
       // If the WS was permanently paused, the close handshake would never complete.
       const closed = await new Promise<boolean>((resolve) => {
         ws.on('close', () => resolve(true));
@@ -1164,7 +1063,7 @@ describe('Gateway', () => {
       });
 
       expect(closed).toBe(true);
-      expect(messages.some((m) => m.includes('Idle timeout'))).toBe(true);
+      expect(messages.some((m) => m.includes('Registration timeout'))).toBe(true);
     });
   });
 

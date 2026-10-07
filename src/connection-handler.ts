@@ -2,7 +2,7 @@ import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocket, type WebSocketServer } from 'ws';
 import { getConfig, type Config } from './config.js';
-import { ircCommand, stripCRLF, type SocketMeta } from './irc-client.js';
+import { stripCRLF, type SocketMeta } from './irc-client.js';
 import type { IdentdServer } from './identd.js';
 import type { ClientManager, ConnectedClient, ServerConfig } from './client-manager.js';
 import { isPrivateHost, privateAddressGuard } from './security.js';
@@ -20,11 +20,6 @@ const ALLOWED_ENCODINGS = new Set([
 // The IRC socket resumes once the browser's buffer falls below this
 const WS_BUFFER_LOW_WATER_MARK = 512 * 1024;
 const WS_DRAIN_POLL_MS = 50;
-
-const isKeepalive = (line: string): boolean => {
-  const command = ircCommand(line);
-  return command === 'PING' || command === 'PONG';
-};
 
 /** The browser's address; X-Forwarded-For is trusted only behind a configured proxy. */
 const getClientIp = (request: IncomingMessage, trustProxy: boolean): string => {
@@ -157,7 +152,7 @@ export class ConnectionHandler {
       identEntry = meta;
       this.identdServer?.register(meta.localPort, meta.remotePort, meta.remoteAddress, client.identUsername);
     });
-    ircClient.on('line', (line) => this.forwardToBrowser(client, line, config));
+    ircClient.on('line', (line) => this.forwardToBrowser(client, line));
     ircClient.on('error', (error) => {
       console.warn(`[${client.id}] IRC error: ${error.message}`);
       this.clientManager.sendRawToClient(webSocket, `ERROR :${stripCRLF(error.message)}`);
@@ -167,7 +162,7 @@ export class ConnectionHandler {
       webSocket.close();
     });
 
-    webSocket.on('message', (data) => this.forwardToServer(client, data.toString(), config));
+    webSocket.on('message', (data) => this.forwardToServer(client, data.toString()));
     webSocket.on('pong', () => this.clientManager.clearWsPongTimer(client));
     webSocket.on('error', (error) => console.warn(`[${client.id}] WebSocket error: ${error.message}`));
     webSocket.on('close', () => {
@@ -178,7 +173,6 @@ export class ConnectionHandler {
 
     this.clientManager.startWsPing(client, config.wsPingInterval, config.wsPongTimeout);
     this.clientManager.startRegistrationTimeout(client, config.registrationTimeout);
-    this.clientManager.resetIdleTimeout(client, config.idleTimeout);
 
     this.connectToIrc(client, config);
   }
@@ -216,7 +210,7 @@ export class ConnectionHandler {
   }
 
   /** Lines from the browser; rate limited per line, so one large frame can't carry a flood. */
-  private forwardToServer(client: ConnectedClient, message: string, config: Config): void {
+  private forwardToServer(client: ConnectedClient, message: string): void {
     const { ircClient, webSocket } = client;
 
     for (const line of message.split(/[\r\n]+/)) {
@@ -227,9 +221,6 @@ export class ConnectionHandler {
         return;
       }
       this.clientManager.checkRegistration(client, line);
-      if (!isKeepalive(line)) {
-        this.clientManager.resetIdleTimeout(client, config.idleTimeout);
-      }
 
       const drained = ircClient.send(line);
       if (!drained && ircClient.writable && webSocket.readyState === WebSocket.OPEN) {
@@ -245,11 +236,7 @@ export class ConnectionHandler {
     }
   }
 
-  private forwardToBrowser(client: ConnectedClient, line: string, config: Config): void {
-    if (!isKeepalive(line)) {
-      this.clientManager.resetIdleTimeout(client, config.idleTimeout);
-    }
-
+  private forwardToBrowser(client: ConnectedClient, line: string): void {
     const drained = this.clientManager.sendRawToClient(client.webSocket, line);
     if (!drained && client.webSocket.readyState === WebSocket.OPEN) {
       console.info(`[${client.id}] WebSocket backpressure, pausing IRC reads`);

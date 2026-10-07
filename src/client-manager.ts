@@ -31,7 +31,6 @@ export interface ConnectedClient {
   wsPingTimer: ReturnType<typeof setInterval> | null;
   wsPongTimer: ReturnType<typeof setTimeout> | null;
   registrationTimer: ReturnType<typeof setTimeout> | null;
-  idleTimer: ReturnType<typeof setTimeout> | null;
   // clearTimeout can't stop a callback already queued, so every timer checks this first
   removed: boolean;
 }
@@ -57,7 +56,6 @@ export class ClientManager {
       wsPingTimer: null,
       wsPongTimer: null,
       registrationTimer: null,
-      idleTimer: null,
       removed: false,
     };
 
@@ -78,7 +76,6 @@ export class ClientManager {
 
     this.stopWsPing(client);
     this.clearRegistrationTimeout(client);
-    this.clearIdleTimeout(client);
 
     this.clients.delete(client.id);
     const remaining = this.getIpConnectionCount(client.ipAddress) - 1;
@@ -143,22 +140,6 @@ export class ClientManager {
       }
       console.info(`[${client.id}] Registration timeout, no NICK/USER received`);
       this.sendRawToClient(client.webSocket, 'ERROR :Registration timeout');
-      client.webSocket.close();
-    }, timeoutSeconds * 1000);
-  }
-
-  /** Restarts the idle countdown; called on traffic other than PING/PONG. 0 disables. */
-  resetIdleTimeout(client: ConnectedClient, timeoutSeconds: number): void {
-    if (timeoutSeconds <= 0) {
-      return;
-    }
-    this.clearIdleTimeout(client);
-    client.idleTimer = setTimeout(() => {
-      if (client.removed) {
-        return;
-      }
-      console.info(`[${client.id}] Idle timeout, no IRC traffic for ${timeoutSeconds}s`);
-      this.sendRawToClient(client.webSocket, `ERROR :Idle timeout (${timeoutSeconds}s)`);
       client.webSocket.close();
     }, timeoutSeconds * 1000);
   }
@@ -228,10 +209,4 @@ export class ClientManager {
     }
   }
 
-  private clearIdleTimeout(client: ConnectedClient): void {
-    if (client.idleTimer !== null) {
-      clearTimeout(client.idleTimer);
-      client.idleTimer = null;
-    }
-  }
 }

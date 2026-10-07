@@ -115,7 +115,6 @@ secret. Re-run `bootstrap.sh` (as root) after changing the package set or sudoer
 | `WS_PING_INTERVAL` | 30 | Seconds between WebSocket keepalive pings |
 | `WS_PONG_TIMEOUT` | 120 | Seconds to wait for a WebSocket pong before disconnecting |
 | `REGISTRATION_TIMEOUT` | 30 | Seconds for the client to send NICK/USER (0 disables) |
-| `IDLE_TIMEOUT` | 600 | Seconds before an idle client is disconnected (0 disables) |
 | `IDENTD_ENABLED` | false | Enable identd (RFC 1413) server |
 | `IDENTD_PORT` | 113 | Identd listen port |
 | `IDENTD_TIMEOUT` | 30 | Identd connection timeout (seconds) |

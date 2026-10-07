@@ -32,7 +32,6 @@ function configFromEnvironment(env: NodeJS.ProcessEnv): Partial<Config> {
     wsPingInterval: parseInteger(env.WS_PING_INTERVAL),
     wsPongTimeout: parseInteger(env.WS_PONG_TIMEOUT),
     registrationTimeout: parseInteger(env.REGISTRATION_TIMEOUT),
-    idleTimeout: parseInteger(env.IDLE_TIMEOUT),
     identdEnabled: env.IDENTD_ENABLED === 'true' ? true : undefined,
     identdPort: parseInteger(env.IDENTD_PORT),
     identdTimeout: parseInteger(env.IDENTD_TIMEOUT),
