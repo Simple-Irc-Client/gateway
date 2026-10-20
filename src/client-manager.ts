@@ -1,5 +1,7 @@
+import { randomBytes } from 'node:crypto';
 import { WebSocket } from 'ws';
-import { IrcClient, ircCommand } from './irc-client.js';
+import { IrcClient, ircCommand, type SocketMeta } from './irc-client.js';
+import { PlaybackBuffer } from './playback.js';
 
 export const RATE_LIMIT_MAX_MESSAGES = 50;
 export const RATE_LIMIT_WINDOW_MS = 5000;
@@ -14,13 +16,26 @@ export interface ServerConfig {
   encoding: string;
 }
 
-/** A browser and its IRC connection. */
+/** Lets a browser that lost its WebSocket reattach to the same IRC connection. */
+export interface ResumableSession {
+  /** Secret the browser presents to resume; never logged */
+  token: string;
+  playback: PlaybackBuffer;
+  /** Set while no browser is attached */
+  detachedAt: number | null;
+  lingerTimer: ReturnType<typeof setTimeout> | null;
+}
+
+/** An IRC connection and the browser currently attached to it. */
 export interface ConnectedClient {
   /** "c1", "c2", ... for log lines */
   id: string;
   ipAddress: string;
-  webSocket: WebSocket;
+  /** Null while a resumable session waits for its browser to come back */
+  webSocket: WebSocket | null;
   ircClient: IrcClient;
+  /** Null unless the browser asked for a resumable session */
+  session: ResumableSession | null;
   serverConfig: ServerConfig;
   identUsername: string;
   /** Lines in the current rate-limit window */
@@ -28,6 +43,12 @@ export interface ConnectedClient {
   rateLimitWindowStart: number;
   /** Set once the browser sends NICK or USER */
   isRegistered: boolean;
+  /** Set once the IRC server accepts the registration (RPL_WELCOME) */
+  isWelcomed: boolean;
+  /** Set once the browser sends QUIT, so its disconnect ends the session */
+  quitRequested: boolean;
+  /** Kept from 'socket connected' so the identd entry can be removed whichever side closes first */
+  identEntry: SocketMeta | null;
   wsPingTimer: ReturnType<typeof setInterval> | null;
   wsPongTimer: ReturnType<typeof setTimeout> | null;
   registrationTimer: ReturnType<typeof setTimeout> | null;
@@ -39,20 +60,41 @@ let clientIdCounter = 0;
 
 export class ClientManager {
   private clients = new Map<string, ConnectedClient>();
+  private clientsByToken = new Map<string, ConnectedClient>();
   private connectionsPerIp = new Map<string, number>();
 
-  createClient(webSocket: WebSocket, clientIp: string, serverConfig: ServerConfig, identUsername: string | null): ConnectedClient {
+  /** A `sessionBufferSize` makes the session resumable, keeping that many bytes of recent lines. */
+  createClient(
+    webSocket: WebSocket,
+    clientIp: string,
+    serverConfig: ServerConfig,
+    identUsername: string | null,
+    sessionBufferSize?: number
+  ): ConnectedClient {
     clientIdCounter++;
+    const session: ResumableSession | null =
+      sessionBufferSize === undefined
+        ? null
+        : {
+            token: randomBytes(16).toString('base64url'),
+            playback: new PlaybackBuffer(sessionBufferSize),
+            detachedAt: null,
+            lingerTimer: null,
+          };
     const client: ConnectedClient = {
       id: `c${clientIdCounter}`,
       ipAddress: clientIp,
       webSocket,
       ircClient: new IrcClient(),
+      session,
       serverConfig,
       identUsername: identUsername ?? `simple_irc_client_webchat_${clientIdCounter}`,
       messageCount: 0,
       rateLimitWindowStart: Date.now(),
       isRegistered: false,
+      isWelcomed: false,
+      quitRequested: false,
+      identEntry: null,
       wsPingTimer: null,
       wsPongTimer: null,
       registrationTimer: null,
@@ -60,6 +102,9 @@ export class ClientManager {
     };
 
     this.clients.set(client.id, client);
+    if (session) {
+      this.clientsByToken.set(session.token, client);
+    }
     this.connectionsPerIp.set(clientIp, this.getIpConnectionCount(clientIp) + 1);
 
     console.log(
@@ -76,6 +121,10 @@ export class ClientManager {
 
     this.stopWsPing(client);
     this.clearRegistrationTimeout(client);
+    if (client.session) {
+      this.clearLingerTimer(client.session);
+      this.clientsByToken.delete(client.session.token);
+    }
 
     this.clients.delete(client.id);
     const remaining = this.getIpConnectionCount(client.ipAddress) - 1;
@@ -98,6 +147,55 @@ export class ClientManager {
 
   getIpConnectionCount(ipAddress: string): number {
     return this.connectionsPerIp.get(ipAddress) ?? 0;
+  }
+
+  findByToken(token: string): ConnectedClient | undefined {
+    return this.clientsByToken.get(token);
+  }
+
+  /** The session that has waited longest for its browser, optionally only among those from `ipAddress`. */
+  findOldestDetached(ipAddress?: string): ConnectedClient | undefined {
+    let oldest: ConnectedClient | undefined;
+    let oldestDetachedAt = Infinity;
+    for (const client of this.clientsByToken.values()) {
+      const detachedAt = client.session?.detachedAt ?? null;
+      if (detachedAt === null || (ipAddress !== undefined && client.ipAddress !== ipAddress)) {
+        continue;
+      }
+      if (detachedAt < oldestDetachedAt) {
+        oldest = client;
+        oldestDetachedAt = detachedAt;
+      }
+    }
+    return oldest;
+  }
+
+  /** Keeps the IRC connection without a browser; `onExpire` runs if none reattaches in time. */
+  detach(client: ConnectedClient, lingerSeconds: number, onExpire: () => void): void {
+    const { session } = client;
+    if (!session) {
+      return;
+    }
+    this.stopWsPing(client);
+    client.webSocket = null;
+    session.detachedAt = Date.now();
+    session.lingerTimer = setTimeout(() => {
+      if (!client.removed) {
+        onExpire();
+      }
+    }, lingerSeconds * 1000);
+  }
+
+  /** Hands the session to `webSocket`; the caller closes any WebSocket it replaces. */
+  attach(client: ConnectedClient, webSocket: WebSocket): void {
+    const { session } = client;
+    if (!session) {
+      return;
+    }
+    this.stopWsPing(client);
+    this.clearLingerTimer(session);
+    session.detachedAt = null;
+    client.webSocket = webSocket;
   }
 
   /** Counts one line against the client's fixed-window rate limit; `false` means drop it. */
@@ -139,15 +237,21 @@ export class ClientManager {
         return;
       }
       console.info(`[${client.id}] Registration timeout, no NICK/USER received`);
-      this.sendRawToClient(client.webSocket, 'ERROR :Registration timeout');
-      client.webSocket.close();
+      if (client.webSocket) {
+        this.sendRawToClient(client.webSocket, 'ERROR :Registration timeout');
+        client.webSocket.close();
+      }
     }, timeoutSeconds * 1000);
   }
 
   /** Pings the browser every interval and terminates it if a pong takes longer than the timeout. */
   startWsPing(client: ConnectedClient, intervalSeconds: number, timeoutSeconds: number): void {
+    const { webSocket } = client;
+    if (!webSocket) {
+      return;
+    }
     client.wsPingTimer = setInterval(() => {
-      if (client.removed || client.webSocket.readyState !== WebSocket.OPEN) {
+      if (client.removed || webSocket.readyState !== WebSocket.OPEN) {
         this.stopWsPing(client);
         return;
       }
@@ -156,7 +260,7 @@ export class ClientManager {
       }
 
       try {
-        client.webSocket.ping();
+        webSocket.ping();
       } catch (error) {
         // Can throw on a socket that is half-closed
         console.warn(`[${client.id}] ping failed: ${(error as Error).message}`);
@@ -168,7 +272,7 @@ export class ClientManager {
           return;
         }
         console.info(`[${client.id}] WebSocket pong timeout, terminating connection`);
-        client.webSocket.terminate();
+        webSocket.terminate();
       }, timeoutSeconds * 1000);
     }, intervalSeconds * 1000);
   }
@@ -206,6 +310,13 @@ export class ClientManager {
     if (client.registrationTimer !== null) {
       clearTimeout(client.registrationTimer);
       client.registrationTimer = null;
+    }
+  }
+
+  private clearLingerTimer(session: ResumableSession): void {
+    if (session.lingerTimer !== null) {
+      clearTimeout(session.lingerTimer);
+      session.lingerTimer = null;
     }
   }
 

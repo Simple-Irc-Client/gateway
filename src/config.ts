@@ -27,6 +27,10 @@ export interface Config {
   wsPongTimeout: number;
   /** Seconds for the browser to send NICK/USER; 0 disables */
   registrationTimeout: number;
+  /** Seconds a resumable IRC session stays connected after its browser disconnects; 0 disables resuming */
+  sessionLinger: number;
+  /** Bytes of recent IRC lines kept per resumable session for the browser to catch up on */
+  sessionBufferSize: number;
   /** Answer RFC 1413 ident queries from IRC servers */
   identdEnabled: boolean;
   identdPort: number;
@@ -49,6 +53,8 @@ const DEFAULT_CONFIG: Config = {
   wsPingInterval: 30,
   wsPongTimeout: 120,
   registrationTimeout: 30,
+  sessionLinger: 1800,
+  sessionBufferSize: 128 * 1024,
   identdEnabled: false,
   identdPort: 113,
   identdTimeout: 30,

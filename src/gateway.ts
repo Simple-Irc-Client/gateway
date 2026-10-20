@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { getConfig } from './config.js';
 import { IdentdServer } from './identd.js';
-import { ClientManager, type ConnectedClient } from './client-manager.js';
+import { ClientManager } from './client-manager.js';
 import { ConnectionHandler } from './connection-handler.js';
 
 const MAX_WS_PAYLOAD_BYTES = 64 * 1024;
@@ -56,18 +56,14 @@ export class Gateway {
     });
   }
 
-  /** Quits every IRC connection, gives clients a bounded time to close, then stops the servers. */
+  /** Ends every session, including detached ones, gives browsers a bounded time to close, then stops the servers. */
   async stop(): Promise<void> {
-    const config = getConfig();
-
     const clients = this.clientManager.getAllClients();
+    const webSockets = clients.flatMap((client) => (client.webSocket ? [client.webSocket] : []));
     for (const client of clients) {
-      client.ircClient.quit(config.quitMessage);
-      if (client.webSocket.readyState === WebSocket.OPEN) {
-        client.webSocket.close();
-      }
+      this.connectionHandler.endSession(client);
     }
-    await this.waitForClientsToClose(clients, SHUTDOWN_DRAIN_TIMEOUT_MS);
+    await this.waitForWebSocketsToClose(webSockets, SHUTDOWN_DRAIN_TIMEOUT_MS);
 
     if (this.identdServer) {
       await this.identdServer.stop();
@@ -81,23 +77,23 @@ export class Gateway {
     console.log('Gateway stopped');
   }
 
-  /** Terminates clients still open at the deadline, otherwise httpServer.close() would wait for them forever. */
-  private waitForClientsToClose(clients: ConnectedClient[], timeoutMs: number): Promise<void> {
-    const open = clients.filter((client) => client.webSocket.readyState !== WebSocket.CLOSED);
+  /** Terminates WebSockets still open at the deadline, otherwise httpServer.close() would wait for them forever. */
+  private waitForWebSocketsToClose(webSockets: WebSocket[], timeoutMs: number): Promise<void> {
+    const open = webSockets.filter((webSocket) => webSocket.readyState !== WebSocket.CLOSED);
     if (open.length === 0) {
       return Promise.resolve();
     }
 
     const allClosed = Promise.all(
-      open.map((client) => new Promise<void>((resolve) => client.webSocket.once('close', () => resolve())))
+      open.map((webSocket) => new Promise<void>((resolve) => webSocket.once('close', () => resolve())))
     );
 
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<void>((resolve) => {
       timer = setTimeout(() => {
-        for (const client of open) {
-          if (client.webSocket.readyState !== WebSocket.CLOSED) {
-            client.webSocket.terminate();
+        for (const webSocket of open) {
+          if (webSocket.readyState !== WebSocket.CLOSED) {
+            webSocket.terminate();
           }
         }
         resolve();

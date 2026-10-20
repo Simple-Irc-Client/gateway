@@ -328,6 +328,91 @@ describe('ClientManager', () => {
     });
   });
 
+  describe('Resumable sessions', () => {
+    const serverConfig = { host: 'irc.example.com', port: 6667, tls: true, encoding: 'utf8' };
+
+    it('creates a session with a unique token only when given a buffer size', () => {
+      const plain = clientManager.createClient(mockWebSocket as any, '127.0.0.1', serverConfig, null);
+      const first = clientManager.createClient(mockWebSocket as any, '127.0.0.1', serverConfig, null, 1024);
+      const second = clientManager.createClient(mockWebSocket as any, '127.0.0.1', serverConfig, null, 1024);
+
+      expect(plain.session).toBeNull();
+      expect(first.session?.token).toMatch(/^[\w-]{22}$/);
+      expect(first.session?.token).not.toBe(second.session?.token);
+      expect(clientManager.findByToken(first.session?.token ?? '')).toBe(first);
+    });
+
+    it('forgets the token when the client is removed', () => {
+      const client = clientManager.createClient(mockWebSocket as any, '127.0.0.1', serverConfig, null, 1024);
+      const token = client.session?.token ?? '';
+
+      clientManager.removeClient(client);
+
+      expect(clientManager.findByToken(token)).toBeUndefined();
+    });
+
+    it('expires a detached session after the linger time', () => {
+      const client = clientManager.createClient(mockWebSocket as any, '127.0.0.1', serverConfig, null, 1024);
+      const onExpire = vi.fn();
+
+      clientManager.detach(client, 60, onExpire);
+      expect(client.webSocket).toBeNull();
+      vi.advanceTimersByTime(59 * 1000);
+      expect(onExpire).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1000);
+      expect(onExpire).toHaveBeenCalledTimes(1);
+    });
+
+    it('cancels the expiry when a browser reattaches', () => {
+      const client = clientManager.createClient(mockWebSocket as any, '127.0.0.1', serverConfig, null, 1024);
+      const onExpire = vi.fn();
+      const newWebSocket = new MockWebSocket();
+
+      clientManager.detach(client, 60, onExpire);
+      clientManager.attach(client, newWebSocket as any);
+      vi.advanceTimersByTime(60 * 1000);
+
+      expect(onExpire).not.toHaveBeenCalled();
+      expect(client.webSocket).toBe(newWebSocket);
+      expect(client.session?.detachedAt).toBeNull();
+    });
+
+    it('does not expire a session removed while detached', () => {
+      const client = clientManager.createClient(mockWebSocket as any, '127.0.0.1', serverConfig, null, 1024);
+      const onExpire = vi.fn();
+
+      clientManager.detach(client, 60, onExpire);
+      clientManager.removeClient(client);
+      vi.advanceTimersByTime(60 * 1000);
+
+      expect(onExpire).not.toHaveBeenCalled();
+    });
+
+    it('stops pinging a detached browser', () => {
+      const client = clientManager.createClient(mockWebSocket as any, '127.0.0.1', serverConfig, null, 1024);
+      clientManager.startWsPing(client, 30, 5);
+
+      clientManager.detach(client, 60, vi.fn());
+
+      expect(client.wsPingTimer).toBeNull();
+    });
+
+    it('finds the session detached longest ago, optionally per IP', () => {
+      const attached = clientManager.createClient(mockWebSocket as any, '10.0.0.1', serverConfig, null, 1024);
+      const older = clientManager.createClient(mockWebSocket as any, '10.0.0.2', serverConfig, null, 1024);
+      const newer = clientManager.createClient(mockWebSocket as any, '10.0.0.1', serverConfig, null, 1024);
+
+      clientManager.detach(older, 60, vi.fn());
+      vi.advanceTimersByTime(1000);
+      clientManager.detach(newer, 60, vi.fn());
+
+      expect(clientManager.findOldestDetached()).toBe(older);
+      expect(clientManager.findOldestDetached('10.0.0.1')).toBe(newer);
+      expect(clientManager.findOldestDetached('10.0.0.3')).toBeUndefined();
+      expect(attached.session?.detachedAt).toBeNull();
+    });
+  });
+
   describe('Removed flag', () => {
     it('sets removed flag on removeClient', () => {
       const serverConfig = { host: 'irc.example.com', port: 6667, tls: true, encoding: 'utf8' };

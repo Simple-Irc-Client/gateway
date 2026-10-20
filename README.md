@@ -109,15 +109,36 @@ secret. Re-run `bootstrap.sh` (as root) after changing the package set or sudoer
 | `ALLOWED_ORIGINS` | `https://app.simpleircclient.com` | Comma-separated WebSocket `Origin` values; set this to your own frontend's origin |
 | `ALLOWED_SERVERS` | - | Comma-separated list (e.g., `irc.libera.chat:6697`); empty allows all |
 | `TRUST_PROXY` | false | Read the client IP from `X-Forwarded-For`; enable only behind a reverse proxy |
+| `BLOCK_PRIVATE_HOSTS` | true | Set to `false` to allow IRC servers on private or loopback addresses (local testing, LAN servers) |
 | `WEBIRC_PASSWORD` | - | WEBIRC password (optional) |
 | `WEBIRC_GATEWAY` | gateway | WEBIRC gateway name |
 | `PONG_TIMEOUT` | 120 | Seconds to wait for the IRC server's PONG |
 | `WS_PING_INTERVAL` | 30 | Seconds between WebSocket keepalive pings |
 | `WS_PONG_TIMEOUT` | 120 | Seconds to wait for a WebSocket pong before disconnecting |
 | `REGISTRATION_TIMEOUT` | 30 | Seconds for the client to send NICK/USER (0 disables) |
+| `SESSION_LINGER` | 1800 | Seconds a resumable session keeps its IRC connection after the browser disconnects (0 disables resuming) |
+| `SESSION_BUFFER_SIZE` | 131072 | Bytes of recent IRC lines kept per resumable session for the browser to catch up on |
 | `IDENTD_ENABLED` | false | Enable identd (RFC 1413) server |
 | `IDENTD_PORT` | 113 | Identd listen port |
 | `IDENTD_TIMEOUT` | 30 | Identd connection timeout (seconds) |
+
+## Resumable Sessions
+
+Mobile browsers drop a backgrounded tab's WebSocket within seconds. A client that asks for a resumable session keeps its IRC connection on the gateway, like a small bouncer, so coming back costs no quit, rejoin or lost messages.
+
+| Query parameter | Meaning |
+|-----------------|---------|
+| `session=true` | Start a resumable session. The gateway's first line is `:sic-gateway SESSION <token>`, and every relayed IRC line is tagged `@simpleircclient.com/seq=<n>`. |
+| `resume=<token>&since=<n>` | Reattach to the session. The first line is `:sic-gateway RESUMED complete` (or `partial` when the buffer dropped lines), followed by the lines after `<n>`. Lines without server-time get a `time` tag. An unknown or expired token starts a new session instead: the first line is then `SESSION`. |
+| `replace=<token>` | Together with `session=true`: end that session first. Used after a page reload, when the page no longer has the state to resume it. |
+
+- A WebSocket that closes after the client sent `QUIT`, or before the IRC server welcomed it, ends the session as before. Without `session=true` nothing changes.
+- A session that is not resumed within `SESSION_LINGER` seconds quits IRC. Closing the tab therefore leaves the user online for up to that long.
+- Resuming the session from a second WebSocket closes the first one with code 4001.
+- Detached sessions count towards the gateway's client limit (1000) and the per-IP limit (10). When either is reached, the session detached longest ago is ended to make room; sessions with a browser attached are never ended for that.
+- Memory: each resumable session buffers at most `SESSION_BUFFER_SIZE` bytes of line text, so 1000 sessions at the default take roughly 128 MB in the worst case (plus per-line overhead). Lower it for small servers.
+- Sessions live in the gateway process: a restart or deploy ends them, and clients reconnect from scratch.
+- The token is the only credential for a session. It is 128 random bits, is never logged, and only works for the same IRC server, port, TLS setting and encoding.
 
 ## Identd (RFC 1413)
 
