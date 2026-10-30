@@ -97,6 +97,35 @@ jobs:
           "
           echo "System packages upgraded"
 
+      - name: Reboot if required
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          REBOOT_TIMEOUT_SECONDS: 300
+          REBOOT_POLL_INTERVAL_SECONDS: 5
+        run: |
+          if ! ssh $DEPLOY_USER@$SSH_HOST "test -f /var/run/reboot-required"; then
+            echo "No reboot required"
+            exit 0
+          fi
+
+          BOOT_ID=$(ssh $DEPLOY_USER@$SSH_HOST "cat /proc/sys/kernel/random/boot_id")
+          echo "Reboot required, rebooting $SSH_HOST..."
+          # The connection drops while the host goes down, so ssh's exit status is meaningless here.
+          ssh $DEPLOY_USER@$SSH_HOST "sudo systemctl reboot" || true
+
+          # A changed boot_id proves the host actually rebooted, not that ssh answered before going down.
+          DEADLINE=$((SECONDS + REBOOT_TIMEOUT_SECONDS))
+          until NEW_BOOT_ID=$(ssh -o ConnectTimeout=$REBOOT_POLL_INTERVAL_SECONDS $DEPLOY_USER@$SSH_HOST \
+                  "cat /proc/sys/kernel/random/boot_id" 2>/dev/null) \
+                && [ "$NEW_BOOT_ID" != "$BOOT_ID" ]; do
+            if [ $SECONDS -ge $DEADLINE ]; then
+              echo "ERROR: $SSH_HOST did not come back within ${REBOOT_TIMEOUT_SECONDS}s after reboot" >&2
+              exit 1
+            fi
+            sleep $REBOOT_POLL_INTERVAL_SECONDS
+          done
+          echo "$SSH_HOST rebooted and is reachable again"
+
       - name: Deploy container
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
