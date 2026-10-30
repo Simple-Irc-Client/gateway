@@ -84,6 +84,19 @@ jobs:
           fi
           echo "'$DEPLOY_USER' user is provisioned on $SSH_HOST"
 
+      - name: Upgrade system packages
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        run: |
+          # sudoers forbids setting DEBIAN_FRONTEND, so conffile prompts are answered via dpkg options.
+          ssh $DEPLOY_USER@$SSH_HOST "
+            set -e
+            sudo apt-get update
+            sudo apt-get upgrade -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold
+            sudo apt-get autoremove -y
+          "
+          echo "System packages upgraded"
+
       - name: Deploy container
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
