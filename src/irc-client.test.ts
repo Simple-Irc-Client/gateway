@@ -197,6 +197,24 @@ describe('IrcClient', () => {
       expect(received.split('PONG :server123').length - 1).toBe(1);
     });
 
+    it('does not relay the PONG answering its own keepalive PING', async () => {
+      const lines = collectLines();
+      await connect();
+
+      serverSocket?.write(':irc.example PONG irc.example :sic-gateway-keepalive\r\n:server NOTICE * :after\r\n');
+
+      await vi.waitFor(() => expect(lines).toEqual([':server NOTICE * :after']));
+    });
+
+    it('relays the PONG answering the browser\'s PING', async () => {
+      const lines = collectLines();
+      await connect();
+
+      serverSocket?.write(':irc.example PONG irc.example :1767225600000\r\n');
+
+      await vi.waitFor(() => expect(lines).toEqual([':irc.example PONG irc.example :1767225600000']));
+    });
+
     it('drops the connection when a line exceeds 2 MiB', async () => {
       const onClose = vi.fn();
       client.on('close', onClose);
@@ -221,6 +239,21 @@ describe('IrcClient', () => {
       client.resume();
       await wait(50);
       expect(lines).toEqual([':server NOTICE * :while-paused']);
+    });
+  });
+
+  describe('keepalive', () => {
+    it('PINGs the server with its own token', async () => {
+      // Only the interval is faked: connecting needs real timeouts
+      vi.useFakeTimers({ toFake: ['setInterval'] });
+      try {
+        await connect();
+        vi.advanceTimersByTime(30_000);
+      } finally {
+        vi.useRealTimers();
+      }
+
+      await vi.waitFor(() => expect(received).toContain('PING :sic-gateway-keepalive\r\n'));
     });
   });
 

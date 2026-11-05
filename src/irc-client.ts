@@ -5,6 +5,8 @@ import iconv from 'iconv-lite';
 
 const CONNECT_TIMEOUT_MS = 30_000;
 const PING_INTERVAL_MS = 30_000;
+// Marks the gateway's own keepalive PINGs, so their PONGs are told apart from the browser's and not relayed
+const KEEPALIVE_TOKEN = 'sic-gateway-keepalive';
 
 // A server that never sends a line terminator must not grow memory without bound
 const MAX_RECEIVE_BUFFER_SIZE = 2 * 1024 * 1024;
@@ -37,6 +39,10 @@ const commandIndex = (words: string[]): number => {
   }
   return index;
 };
+
+// :irc.example PONG irc.example :sic-gateway-keepalive
+const isKeepalivePong = (line: string): boolean =>
+  ircCommand(line) === 'PONG' && ircParams(line).split(' ').at(-1)?.replace(/^:/, '') === KEEPALIVE_TOKEN;
 
 /** WEBIRC tells the IRC server the browser's address instead of the gateway's. */
 export interface WebircConfig {
@@ -75,8 +81,8 @@ interface IrcClientEvents {
 
 /**
  * Connection to an IRC server on behalf of one browser, which does its own registration.
- * The gateway only sends WEBIRC first, answers server PINGs (which the browser never sees), and PINGs the server to
- * detect a dead connection.
+ * The gateway only sends WEBIRC first, answers server PINGs, and PINGs the server to detect a dead connection; the
+ * browser sees neither those PINGs nor the PONGs to the gateway's own.
  */
 export class IrcClient extends EventEmitter<IrcClientEvents> {
   private socket: net.Socket | null = null;
@@ -220,12 +226,16 @@ export class IrcClient extends EventEmitter<IrcClientEvents> {
       this.send(`PONG ${ircParams(line)}`);
       return;
     }
+    // The browser would take it for the answer to its own PING and show it as lag
+    if (isKeepalivePong(line)) {
+      return;
+    }
     this.emit('line', line);
   }
 
   private startKeepalive(pongTimeoutMs: number): void {
     this.pingTimer = setInterval(() => {
-      this.send(`PING :${Date.now()}`);
+      this.send(`PING :${KEEPALIVE_TOKEN}`);
       this.clearPongTimer();
       this.pongTimer = setTimeout(() => {
         this.socket?.destroy(new Error('PONG timeout: server unresponsive'));
