@@ -2,7 +2,14 @@
 
 [![Build Status](https://github.com/Simple-Irc-Client/gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/Simple-Irc-Client/gateway/actions/workflows/ci.yml)
 
-WebSocket to IRC gateway for Simple IRC Client.
+Browsers can only reach IRC servers that accept WebSocket, and most don't. This gateway sits in between: the web chat talks to it over WebSocket, and it talks plain IRC to any server.
+
+You only need it to host the web chat yourself. The desktop app connects to IRC directly.
+
+It can also:
+- Keep a phone user connected while their browser tab is in the background ([resumable sessions](#resumable-sessions))
+- Answer identd queries, so users don't show up with `~` in their ident
+- Pass users' real IPs to the IRC server ([WEBIRC](#webirc))
 
 ## Local Development
 
