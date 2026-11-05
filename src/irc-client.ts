@@ -18,6 +18,16 @@ export const stripCRLF = (input: string): string => input.replace(/[\r\n]/g, '')
 /** The command word of an IRC line, after any tags and source. */
 export const ircCommand = (line: string): string | undefined => {
   const words = line.split(' ');
+  return words[commandIndex(words)]?.toUpperCase();
+};
+
+/** Everything after the command word of an IRC line, as sent. */
+export const ircParams = (line: string): string => {
+  const words = line.split(' ');
+  return words.slice(commandIndex(words) + 1).join(' ');
+};
+
+const commandIndex = (words: string[]): number => {
   let index = 0;
   if (words[index]?.startsWith('@')) {
     index++;
@@ -25,7 +35,7 @@ export const ircCommand = (line: string): string | undefined => {
   if (words[index]?.startsWith(':')) {
     index++;
   }
-  return words[index]?.toUpperCase();
+  return index;
 };
 
 /** WEBIRC tells the IRC server the browser's address instead of the gateway's. */
@@ -65,7 +75,8 @@ interface IrcClientEvents {
 
 /**
  * Connection to an IRC server on behalf of one browser, which does its own registration.
- * The gateway only sends WEBIRC first, answers server PINGs, and PINGs the server to detect a dead connection.
+ * The gateway only sends WEBIRC first, answers server PINGs (which the browser never sees), and PINGs the server to
+ * detect a dead connection.
  */
 export class IrcClient extends EventEmitter<IrcClientEvents> {
   private socket: net.Socket | null = null;
@@ -203,11 +214,13 @@ export class IrcClient extends EventEmitter<IrcClientEvents> {
   private handleLine(line: string): void {
     // Any line proves the server is alive
     this.clearPongTimer();
-    this.emit('line', line);
 
-    if (line.startsWith('PING ')) {
-      this.send(`PONG ${line.slice('PING '.length)}`);
+    // Answered here and not relayed: a detached session must stay online, and the browser would answer it again
+    if (ircCommand(line) === 'PING') {
+      this.send(`PONG ${ircParams(line)}`);
+      return;
     }
+    this.emit('line', line);
   }
 
   private startKeepalive(pongTimeoutMs: number): void {

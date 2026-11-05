@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createServer, type Server, type Socket } from 'node:net';
-import { IrcClient, ircCommand, type IrcClientOptions } from './irc-client.js';
+import { IrcClient, ircCommand, ircParams, type IrcClientOptions } from './irc-client.js';
 import { privateAddressGuard } from './security.js';
 
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -176,6 +176,27 @@ describe('IrcClient', () => {
       expect(received).toContain('PONG :server123\r\n');
     });
 
+    it('answers a server PING sent with tags and a source', async () => {
+      await connect();
+
+      serverSocket?.write('@time=2026-01-01T00:00:00Z :irc.example PING :server123\r\n');
+
+      await vi.waitFor(() => expect(received).toContain('PONG :server123\r\n'));
+    });
+
+    it('answers a server PING only once, without relaying it to the browser', async () => {
+      const lines = collectLines();
+      await connect();
+
+      serverSocket?.write('PING :server123\r\n:server NOTICE * :after\r\n');
+
+      await vi.waitFor(() => {
+        expect(lines).toEqual([':server NOTICE * :after']);
+        expect(received).toContain('PONG :server123\r\n');
+      });
+      expect(received.split('PONG :server123').length - 1).toBe(1);
+    });
+
     it('drops the connection when a line exceeds 2 MiB', async () => {
       const onClose = vi.fn();
       client.on('close', onClose);
@@ -212,6 +233,20 @@ describe('IrcClient', () => {
       await connect();
       await expect(client.waitForDrain()).resolves.toBeUndefined();
     });
+  });
+});
+
+describe('ircParams', () => {
+  it('returns everything after the command word', () => {
+    expect(ircParams('PING :server 123')).toBe(':server 123');
+  });
+
+  it('skips IRCv3 tags and the source', () => {
+    expect(ircParams('@time=2026-01-01T00:00:00Z :irc.example PING irc.example :123')).toBe('irc.example :123');
+  });
+
+  it('is empty when the command has no parameters', () => {
+    expect(ircParams('PING')).toBe('');
   });
 });
 
